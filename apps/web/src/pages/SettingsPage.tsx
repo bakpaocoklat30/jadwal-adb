@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { Copy, KeyRound, Plus, Power, RefreshCw, Shield, Trash2, Users } from 'lucide-react';
 import {
   DAY_NAMES_ID,
+  normalizeShutdownSettings,
+  type ShutdownDayRule,
   type ShutdownSettings,
   type UserPublic,
   type UserRole
@@ -47,11 +49,11 @@ export function SettingsPage({
   const isAdmin = currentUser.role === 'admin';
   const canEditShutdown = currentUser.role === 'admin' || currentUser.role === 'waka';
 
-  // Auto-shutdown state
-  const [sdEnabled, setSdEnabled] = useState(shutdownSettings.enabled);
-  const [sdTime, setSdTime] = useState(shutdownSettings.time);
-  const [sdDays, setSdDays] = useState<number[]>(shutdownSettings.daysOfWeek);
-  const [sdGrace, setSdGrace] = useState(shutdownSettings.graceSeconds);
+  // Auto-shutdown state (per-day)
+  const normalizedInitial = normalizeShutdownSettings(shutdownSettings);
+  const [sdEnabled, setSdEnabled] = useState(normalizedInitial.enabled);
+  const [sdGrace, setSdGrace] = useState(normalizedInitial.graceSeconds);
+  const [sdRules, setSdRules] = useState<ShutdownDayRule[]>(normalizedInitial.dayRules);
   const [savingSd, setSavingSd] = useState(false);
 
   // Change own password
@@ -68,10 +70,10 @@ export function SettingsPage({
   const [newUserPass, setNewUserPass] = useState('');
 
   useEffect(() => {
-    setSdEnabled(shutdownSettings.enabled);
-    setSdTime(shutdownSettings.time);
-    setSdDays(shutdownSettings.daysOfWeek);
-    setSdGrace(shutdownSettings.graceSeconds);
+    const normalized = normalizeShutdownSettings(shutdownSettings);
+    setSdEnabled(normalized.enabled);
+    setSdGrace(normalized.graceSeconds);
+    setSdRules(normalized.dayRules);
   }, [shutdownSettings]);
 
   useEffect(() => {
@@ -86,13 +88,30 @@ export function SettingsPage({
     try {
       await onUpdateShutdownSettings({
         enabled: sdEnabled,
-        time: sdTime,
-        daysOfWeek: sdDays,
-        graceSeconds: sdGrace
+        graceSeconds: sdGrace,
+        dayRules: sdRules
       });
     } finally {
       setSavingSd(false);
     }
+  };
+
+  const updateDayRule = (dayOfWeek: number, patch: Partial<ShutdownDayRule>) => {
+    setSdRules((prev) =>
+      prev.map((r) => (r.dayOfWeek === dayOfWeek ? { ...r, ...patch } : r))
+    );
+  };
+
+  const copyMondayToTueThu = () => {
+    const mon = sdRules.find((r) => r.dayOfWeek === 1);
+    if (!mon) return;
+    setSdRules((prev) =>
+      prev.map((r) =>
+        r.dayOfWeek >= 2 && r.dayOfWeek <= 4
+          ? { ...r, enabled: mon.enabled, time: mon.time }
+          : r
+      )
+    );
   };
 
   const handleChangePassword = async (e: React.FormEvent) => {
@@ -140,41 +159,28 @@ export function SettingsPage({
         >
           <h2 className="flex items-center gap-2 text-lg font-bold text-slate-900">
             <Power className="h-5 w-5 text-rose-600" />
-            Auto-Shutdown PC Bel Terjadwal
+            Auto-Shutdown PC Bel Per Hari
           </h2>
           <p className="mt-0.5 text-xs text-slate-500">
-            Matikan komputer bel otomatis setiap sore setelah seluruh jadwal selesai.
+            Atur jam mati otomatis berbeda untuk tiap hari (misalnya Senin–Kamis sore, Jumat siang,
+            Sabtu/Minggu berbeda atau nonaktif).
           </p>
 
           <div className="mt-4 space-y-4">
-            <label className="flex items-center gap-2.5 text-sm font-semibold text-slate-800">
-              <input
-                type="checkbox"
-                checked={sdEnabled}
-                disabled={!canEditShutdown}
-                onChange={(e) => setSdEnabled(e.target.checked)}
-                className="h-4 w-4 rounded border-slate-300"
-              />
-              Aktifkan Auto-Shutdown Harian
-            </label>
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-700">
-                  Jam Shutdown
-                </label>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <label className="flex items-center gap-2.5 text-sm font-semibold text-slate-800">
                 <input
-                  type="time"
-                  value={sdTime}
+                  type="checkbox"
+                  checked={sdEnabled}
                   disabled={!canEditShutdown}
-                  onChange={(e) => setSdTime(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                  onChange={(e) => setSdEnabled(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300"
                 />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-700">
-                  Countdown Pengaman (detik)
-                </label>
+                Aktifkan Auto-Shutdown Terjadwal
+              </label>
+
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-slate-600">Countdown:</span>
                 <input
                   type="number"
                   min={5}
@@ -182,36 +188,69 @@ export function SettingsPage({
                   value={sdGrace}
                   disabled={!canEditShutdown}
                   onChange={(e) => setSdGrace(Number(e.target.value || 20))}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                  className="w-16 rounded-xl border border-slate-200 px-2.5 py-1.5 text-xs font-semibold"
                 />
+                <span className="text-xs text-slate-500">detik</span>
               </div>
             </div>
 
-            <div>
-              <label className="mb-1.5 block text-xs font-medium text-slate-700">Hari Aktif</label>
-              <div className="flex flex-wrap gap-2">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-slate-700">Jadwal Mati per Hari</span>
+                {canEditShutdown && (
+                  <button
+                    type="button"
+                    onClick={copyMondayToTueThu}
+                    className="text-xs font-semibold text-blue-600 hover:underline"
+                  >
+                    Samakan Senin → Sel–Kam
+                  </button>
+                )}
+              </div>
+
+              <div className="space-y-1.5">
                 {[1, 2, 3, 4, 5, 6, 0].map((dayIdx) => {
-                  const active = sdDays.includes(dayIdx);
+                  const rule = sdRules.find((r) => r.dayOfWeek === dayIdx) ?? {
+                    dayOfWeek: dayIdx,
+                    enabled: false,
+                    time: '16:30'
+                  };
+                  const isWeekend = dayIdx === 0 || dayIdx === 6;
                   return (
-                    <button
+                    <div
                       key={dayIdx}
-                      type="button"
-                      disabled={!canEditShutdown}
-                      onClick={() =>
-                        setSdDays((prev) =>
-                          prev.includes(dayIdx)
-                            ? prev.filter((d) => d !== dayIdx)
-                            : [...prev, dayIdx]
-                        )
-                      }
-                      className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${
-                        active
-                          ? 'bg-slate-900 text-white'
-                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      className={`flex items-center justify-between gap-3 rounded-xl border px-3 py-2 ${
+                        rule.enabled
+                          ? 'border-slate-200 bg-white'
+                          : 'border-slate-100 bg-slate-50 text-slate-400'
                       }`}
                     >
-                      {DAY_NAMES_ID[dayIdx]}
-                    </button>
+                      <label className="flex items-center gap-2.5 text-sm font-medium">
+                        <input
+                          type="checkbox"
+                          checked={rule.enabled}
+                          disabled={!canEditShutdown}
+                          onChange={(e) => updateDayRule(dayIdx, { enabled: e.target.checked })}
+                          className="h-4 w-4 rounded border-slate-300"
+                        />
+                        <span className={isWeekend ? 'text-amber-700' : 'text-slate-800'}>
+                          {DAY_NAMES_ID[dayIdx]}
+                        </span>
+                      </label>
+
+                      <div className="flex items-center gap-2">
+                        {!rule.enabled && (
+                          <span className="text-[11px] text-slate-400">Nonaktif</span>
+                        )}
+                        <input
+                          type="time"
+                          value={rule.time}
+                          disabled={!canEditShutdown || !rule.enabled}
+                          onChange={(e) => updateDayRule(dayIdx, { time: e.target.value })}
+                          className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-800 disabled:bg-slate-100 disabled:text-slate-400"
+                        />
+                      </div>
+                    </div>
                   );
                 })}
               </div>

@@ -52,11 +52,16 @@ export interface DateOverride {
   createdAt: string;
 }
 
-export interface ShutdownSettings {
+export interface ShutdownDayRule {
+  dayOfWeek: number; // 0 = Minggu .. 6 = Sabtu
   enabled: boolean;
   time: string; // HH:MM
-  daysOfWeek: number[];
+}
+
+export interface ShutdownSettings {
+  enabled: boolean;
   graceSeconds: number;
+  dayRules: ShutdownDayRule[];
   updatedAt: string;
 }
 

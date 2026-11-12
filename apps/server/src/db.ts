@@ -17,7 +17,11 @@ import type {
   UserRole,
   WeeklyRule
 } from '@jadwal-adb/shared';
-import { sortSlots } from '@jadwal-adb/shared';
+import {
+  createDefaultShutdownSettings,
+  normalizeShutdownSettings,
+  sortSlots
+} from '@jadwal-adb/shared';
 
 export interface UserRow {
   id: string;
@@ -209,13 +213,7 @@ export class AppDatabase {
     }
 
     if (!this.getMeta('shutdown_settings')) {
-      const initialShutdown: ShutdownSettings = {
-        enabled: false,
-        time: '16:30',
-        daysOfWeek: [1, 2, 3, 4, 5],
-        graceSeconds: 20,
-        updatedAt: now
-      };
+      const initialShutdown = createDefaultShutdownSettings(now);
       this.setMeta('shutdown_settings', JSON.stringify(initialShutdown));
     }
 
@@ -707,7 +705,8 @@ export class AppDatabase {
 
   // --- Shutdown Settings ---
   public getShutdownSettings(): ShutdownSettings {
-    return JSON.parse(this.getMeta('shutdown_settings')!) as ShutdownSettings;
+    const raw = JSON.parse(this.getMeta('shutdown_settings')!);
+    return normalizeShutdownSettings(raw);
   }
 
   public updateShutdownSettings(input: Omit<ShutdownSettings, 'updatedAt'>): ShutdownSettings {

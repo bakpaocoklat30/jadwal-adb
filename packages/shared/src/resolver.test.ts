@@ -5,6 +5,7 @@ import {
   generateScheduleSlots,
   getNextBellSlot,
   getZonedDateParts,
+  normalizeShutdownSettings,
   resolveDaySchedule,
   shiftTimeHHMM,
   shouldTriggerAutoShutdown
@@ -93,9 +94,16 @@ function createSampleSnapshot(): ScheduleSnapshot {
     ],
     shutdownSettings: {
       enabled: true,
-      time: '16:30',
-      daysOfWeek: [1, 2, 3, 4, 5],
       graceSeconds: 20,
+      dayRules: [
+        { dayOfWeek: 0, enabled: true, time: '10:00' },
+        { dayOfWeek: 1, enabled: true, time: '16:30' },
+        { dayOfWeek: 2, enabled: true, time: '16:30' },
+        { dayOfWeek: 3, enabled: true, time: '16:30' },
+        { dayOfWeek: 4, enabled: true, time: '16:30' },
+        { dayOfWeek: 5, enabled: true, time: '12:00' },
+        { dayOfWeek: 6, enabled: true, time: '13:15' }
+      ],
       updatedAt: '2026-01-01T00:00:00Z'
     },
     generatedAt: '2026-11-01T00:00:00Z'
@@ -172,11 +180,24 @@ test('generateScheduleSlots builds JP + breaks + end of day with optional intro'
   );
 });
 
-test('shouldTriggerAutoShutdown respects enabled, dayOfWeek, and time', () => {
+test('shouldTriggerAutoShutdown respects per-day times and legacy migration', () => {
   const snapshot = createSampleSnapshot();
   assert.equal(shouldTriggerAutoShutdown(snapshot.shutdownSettings, 1, '16:30'), true);
-  assert.equal(shouldTriggerAutoShutdown(snapshot.shutdownSettings, 6, '16:30'), false);
-  assert.equal(shouldTriggerAutoShutdown(snapshot.shutdownSettings, 1, '16:31'), false);
+  assert.equal(shouldTriggerAutoShutdown(snapshot.shutdownSettings, 5, '12:00'), true);
+  assert.equal(shouldTriggerAutoShutdown(snapshot.shutdownSettings, 5, '16:30'), false);
+  assert.equal(shouldTriggerAutoShutdown(snapshot.shutdownSettings, 6, '13:15'), true);
+  assert.equal(shouldTriggerAutoShutdown(snapshot.shutdownSettings, 0, '10:00'), true);
+
+  const migrated = normalizeShutdownSettings({
+    enabled: true,
+    time: '16:00',
+    daysOfWeek: [1, 3, 5],
+    graceSeconds: 15,
+    updatedAt: '2026-01-01T00:00:00Z'
+  });
+  assert.equal(shouldTriggerAutoShutdown(migrated, 1, '16:00'), true);
+  assert.equal(shouldTriggerAutoShutdown(migrated, 2, '16:00'), false);
+  assert.equal(shouldTriggerAutoShutdown(migrated, 5, '16:00'), true);
 });
 
 test('getZonedDateParts formats Asia/Jakarta properly', () => {

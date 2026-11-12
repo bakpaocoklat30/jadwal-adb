@@ -17,6 +17,7 @@ import {
   DAY_NAMES_ID,
   generateScheduleSlots,
   getZonedDateParts,
+  normalizeShutdownSettings,
   shiftTimeHHMM,
   sortSlots,
   type AudioFileEntry,
@@ -1077,108 +1078,152 @@ export function ScheduleManager({
       )}
 
       {/* SUBTAB 3: AUTO-SHUTDOWN */}
-      {subTab === 'shutdown' && (
-        <div className="mx-auto max-w-xl space-y-4 rounded-2xl border border-slate-800 bg-slate-900 p-5">
-          <div>
-            <h3 className="font-bold text-white">Auto-Shutdown PC Bel Terjadwal</h3>
-            <p className="text-xs text-slate-400">
-              Matikan komputer bel otomatis setelah jam sekolah selesai.
-            </p>
-          </div>
-
-          <label className="flex items-center gap-2.5 text-sm font-semibold text-slate-200">
-            <input
-              type="checkbox"
-              checked={draft.shutdownSettings.enabled}
-              onChange={(e) =>
-                updateDraft((prev) => ({
-                  ...prev,
-                  shutdownSettings: {
-                    ...prev.shutdownSettings,
-                    enabled: e.target.checked
-                  }
-                }))
+      {subTab === 'shutdown' && (() => {
+        const sd = normalizeShutdownSettings(draft.shutdownSettings);
+        const updateSdDay = (dayOfWeek: number, patch: { enabled?: boolean; time?: string }) => {
+          updateDraft((prev) => {
+            const cur = normalizeShutdownSettings(prev.shutdownSettings);
+            return {
+              ...prev,
+              shutdownSettings: {
+                ...cur,
+                dayRules: cur.dayRules.map((r) =>
+                  r.dayOfWeek === dayOfWeek ? { ...r, ...patch } : r
+                )
               }
-              className="h-4 w-4 rounded"
-            />
-            Aktifkan Auto-Shutdown Harian
-          </label>
+            };
+          });
+        };
+        const copyMondayToTueThu = () => {
+          const mon = sd.dayRules.find((r) => r.dayOfWeek === 1);
+          if (!mon) return;
+          updateDraft((prev) => {
+            const cur = normalizeShutdownSettings(prev.shutdownSettings);
+            return {
+              ...prev,
+              shutdownSettings: {
+                ...cur,
+                dayRules: cur.dayRules.map((r) =>
+                  r.dayOfWeek >= 2 && r.dayOfWeek <= 4
+                    ? { ...r, enabled: mon.enabled, time: mon.time }
+                    : r
+                )
+              }
+            };
+          });
+        };
 
-          <div className="grid gap-3 sm:grid-cols-2">
+        return (
+          <div className="mx-auto max-w-xl space-y-4 rounded-2xl border border-slate-800 bg-slate-900 p-5">
             <div>
-              <label className="mb-1 block text-xs text-slate-400">Jam Shutdown</label>
-              <input
-                type="time"
-                value={draft.shutdownSettings.time}
-                onChange={(e) =>
-                  updateDraft((prev) => ({
-                    ...prev,
-                    shutdownSettings: {
-                      ...prev.shutdownSettings,
-                      time: e.target.value
-                    }
-                  }))
-                }
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
-              />
+              <h3 className="font-bold text-white">Auto-Shutdown PC Bel Per Hari</h3>
+              <p className="text-xs text-slate-400">
+                Atur jam mati otomatis berbeda tiap hari (misal Senin–Kamis, Jumat, Sabtu, dan
+                Minggu masing-masing berbeda).
+              </p>
             </div>
-            <div>
-              <label className="mb-1 block text-xs text-slate-400">
-                Countdown Pengaman (detik)
+
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <label className="flex items-center gap-2.5 text-sm font-semibold text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={sd.enabled}
+                  onChange={(e) =>
+                    updateDraft((prev) => ({
+                      ...prev,
+                      shutdownSettings: {
+                        ...normalizeShutdownSettings(prev.shutdownSettings),
+                        enabled: e.target.checked
+                      }
+                    }))
+                  }
+                  className="h-4 w-4 rounded"
+                />
+                Aktifkan Auto-Shutdown Terjadwal
               </label>
-              <input
-                type="number"
-                min={5}
-                max={120}
-                value={draft.shutdownSettings.graceSeconds}
-                onChange={(e) =>
-                  updateDraft((prev) => ({
-                    ...prev,
-                    shutdownSettings: {
-                      ...prev.shutdownSettings,
-                      graceSeconds: Number(e.target.value || 20)
-                    }
-                  }))
-                }
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
-              />
-            </div>
-          </div>
 
-          <div>
-            <label className="mb-1.5 block text-xs text-slate-400">Hari Aktif</label>
-            <div className="flex flex-wrap gap-2">
-              {ORDERED_DAYS.map((dayIdx) => {
-                const active = draft.shutdownSettings.daysOfWeek.includes(dayIdx);
-                return (
-                  <button
-                    key={dayIdx}
-                    type="button"
-                    onClick={() =>
-                      updateDraft((prev) => ({
-                        ...prev,
-                        shutdownSettings: {
-                          ...prev.shutdownSettings,
-                          daysOfWeek: active
-                            ? prev.shutdownSettings.daysOfWeek.filter((d) => d !== dayIdx)
-                            : [...prev.shutdownSettings.daysOfWeek, dayIdx]
-                        }
-                      }))
-                    }
-                    className={`rounded-xl px-3 py-1.5 text-xs font-semibold ${
-                      active
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                    }`}
-                  >
-                    {DAY_NAMES_ID[dayIdx]}
-                  </button>
-                );
-              })}
+              <div className="flex items-center gap-2 text-xs text-slate-300">
+                <span>Countdown:</span>
+                <input
+                  type="number"
+                  min={5}
+                  max={120}
+                  value={sd.graceSeconds}
+                  onChange={(e) =>
+                    updateDraft((prev) => ({
+                      ...prev,
+                      shutdownSettings: {
+                        ...normalizeShutdownSettings(prev.shutdownSettings),
+                        graceSeconds: Number(e.target.value || 20)
+                      }
+                    }))
+                  }
+                  className="w-16 rounded-lg border border-slate-700 bg-slate-950 px-2.5 py-1 text-center font-semibold text-white"
+                />
+                <span className="text-slate-400">detik</span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-medium text-slate-300">Jadwal Mati per Hari</span>
+                <button
+                  type="button"
+                  onClick={copyMondayToTueThu}
+                  className="font-semibold text-blue-400 hover:underline"
+                >
+                  Samakan Senin → Sel–Kam
+                </button>
+              </div>
+
+              <div className="space-y-1.5">
+                {ORDERED_DAYS.map((dayIdx) => {
+                  const rule = sd.dayRules.find((r) => r.dayOfWeek === dayIdx) ?? {
+                    dayOfWeek: dayIdx,
+                    enabled: false,
+                    time: '16:30'
+                  };
+                  return (
+                    <div
+                      key={dayIdx}
+                      className={`flex items-center justify-between gap-3 rounded-xl border px-3 py-2 ${
+                        rule.enabled
+                          ? 'border-slate-700 bg-slate-950/70'
+                          : 'border-slate-800/80 bg-slate-950/30 opacity-65'
+                      }`}
+                    >
+                      <label className="flex items-center gap-2.5 text-xs font-semibold text-slate-200">
+                        <input
+                          type="checkbox"
+                          checked={rule.enabled}
+                          onChange={(e) => updateSdDay(dayIdx, { enabled: e.target.checked })}
+                          className="h-4 w-4 rounded"
+                        />
+                        <span className={dayIdx === 0 || dayIdx === 6 ? 'text-amber-300' : ''}>
+                          {DAY_NAMES_ID[dayIdx]}
+                        </span>
+                      </label>
+
+                      <div className="flex items-center gap-2">
+                        {!rule.enabled && (
+                          <span className="text-[11px] text-slate-500">Nonaktif</span>
+                        )}
+                        <input
+                          type="time"
+                          value={rule.time}
+                          disabled={!rule.enabled}
+                          onChange={(e) => updateSdDay(dayIdx, { time: e.target.value })}
+                          className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-40"
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

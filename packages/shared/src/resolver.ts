@@ -6,6 +6,7 @@ import type {
   ScheduleProfile,
   ScheduleSlot,
   ScheduleSnapshot,
+  ShutdownDayRule,
   ShutdownSettings,
   ZonedDateParts
 } from './types.js';
@@ -185,14 +186,107 @@ export function getNextBellSlot(
   return null;
 }
 
+export function createDefaultShutdownSettings(updatedAt = new Date().toISOString()): ShutdownSettings {
+  const defaultTimes: Record<number, string> = {
+    0: '12:00', // Minggu
+    1: '16:30', // Senin
+    2: '16:30', // Selasa
+    3: '16:30', // Rabu
+    4: '16:30', // Kamis
+    5: '12:30', // Jumat
+    6: '13:00'  // Sabtu
+  };
+  return {
+    enabled: false,
+    graceSeconds: 20,
+    dayRules: [0, 1, 2, 3, 4, 5, 6].map((dayOfWeek) => ({
+      dayOfWeek,
+      enabled: dayOfWeek >= 1 && dayOfWeek <= 5,
+      time: defaultTimes[dayOfWeek] ?? '16:30'
+    })),
+    updatedAt
+  };
+}
+
+export function normalizeShutdownSettings(raw: unknown): ShutdownSettings {
+  const defaults = createDefaultShutdownSettings();
+  if (typeof raw !== 'object' || raw === null) {
+    return defaults;
+  }
+  const obj = raw as Record<string, unknown>;
+  const enabled = typeof obj.enabled === 'boolean' ? obj.enabled : false;
+  const graceSeconds =
+    typeof obj.graceSeconds === 'number' && Number.isFinite(obj.graceSeconds)
+      ? Math.max(5, Math.min(120, Math.round(obj.graceSeconds)))
+      : 20;
+  const updatedAt = typeof obj.updatedAt === 'string' ? obj.updatedAt : defaults.updatedAt;
+
+  if (Array.isArray(obj.dayRules)) {
+    const byDay = new Map<number, ShutdownDayRule>();
+    for (const item of obj.dayRules) {
+      if (typeof item === 'object' && item !== null) {
+        const r = item as Record<string, unknown>;
+        const d = Number(r.dayOfWeek);
+        if (Number.isInteger(d) && d >= 0 && d <= 6) {
+          byDay.set(d, {
+            dayOfWeek: d,
+            enabled: typeof r.enabled === 'boolean' ? r.enabled : false,
+            time: typeof r.time === 'string' && /^([01]\d|2[0-3]):([0-5]\d)$/.test(r.time)
+              ? r.time
+              : '16:30'
+          });
+        }
+      }
+    }
+    return {
+      enabled,
+      graceSeconds,
+      dayRules: [0, 1, 2, 3, 4, 5, 6].map(
+        (d) => byDay.get(d) ?? defaults.dayRules.find((x) => x.dayOfWeek === d)!
+      ),
+      updatedAt
+    };
+  }
+
+  // Backward-compatible migration from legacy { time, daysOfWeek } format
+  const legacyTime =
+    typeof obj.time === 'string' && /^([01]\d|2[0-3]):([0-5]\d)$/.test(obj.time)
+      ? obj.time
+      : '16:30';
+  const legacyDays = new Set<number>(
+    Array.isArray(obj.daysOfWeek) ? obj.daysOfWeek.map(Number) : [1, 2, 3, 4, 5]
+  );
+
+  return {
+    enabled,
+    graceSeconds,
+    dayRules: [0, 1, 2, 3, 4, 5, 6].map((dayOfWeek) => ({
+      dayOfWeek,
+      enabled: legacyDays.has(dayOfWeek),
+      time: legacyTime
+    })),
+    updatedAt
+  };
+}
+
+export function getShutdownRuleForDay(
+  shutdown: ShutdownSettings,
+  dayOfWeek: number
+): ShutdownDayRule | null {
+  const normalized = normalizeShutdownSettings(shutdown);
+  if (!normalized.enabled) return null;
+  const rule = normalized.dayRules.find((r) => r.dayOfWeek === dayOfWeek);
+  if (!rule || !rule.enabled) return null;
+  return rule;
+}
+
 export function shouldTriggerAutoShutdown(
   shutdown: ShutdownSettings,
   dayOfWeek: number,
   timeStr: string
 ): boolean {
-  if (!shutdown.enabled) return false;
-  if (!shutdown.daysOfWeek.includes(dayOfWeek)) return false;
-  return shutdown.time === timeStr;
+  const rule = getShutdownRuleForDay(shutdown, dayOfWeek);
+  return rule !== null && rule.time === timeStr;
 }
 
 export function createId(): string {

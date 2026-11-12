@@ -54,11 +54,16 @@ export const dateOverrideCreateSchema = z
     message: 'Tanggal selesai tidak boleh lebih awal dari tanggal mulai'
   });
 
+export const shutdownDayRuleSchema = z.object({
+  dayOfWeek: z.number().int().min(0).max(6),
+  enabled: z.boolean(),
+  time: timeHHMMSchema
+});
+
 export const shutdownSettingsSchema = z.object({
   enabled: z.boolean(),
-  time: timeHHMMSchema,
-  daysOfWeek: z.array(z.number().int().min(0).max(6)).max(7),
-  graceSeconds: z.number().int().min(5).max(120).default(20)
+  graceSeconds: z.number().int().min(5).max(120).default(20),
+  dayRules: z.array(shutdownDayRuleSchema).length(7)
 });
 
 export const loginSchema = z.object({

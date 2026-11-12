@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { BellLogInput, ScheduleSnapshot } from '@jadwal-adb/shared';
+import {
+  normalizeShutdownSettings,
+  type BellLogInput,
+  type ScheduleSnapshot
+} from '@jadwal-adb/shared';
 import type { DesktopConfig } from './types.js';
 
 interface PersistedRuntimeState {
@@ -65,7 +69,10 @@ export class DesktopStore {
 
     fs.mkdirSync(this.config.audioDir, { recursive: true });
 
-    this.snapshot = readJsonSafe<ScheduleSnapshot>(this.snapshotPath);
+    const loadedSnap = readJsonSafe<ScheduleSnapshot>(this.snapshotPath);
+    this.snapshot = loadedSnap
+      ? { ...loadedSnap, shutdownSettings: normalizeShutdownSettings(loadedSnap.shutdownSettings) }
+      : null;
     const loadedState = readJsonSafe<Partial<PersistedRuntimeState>>(this.statePath);
     this.state = {
       playedKeys: loadedState?.playedKeys ?? [],
@@ -88,26 +95,38 @@ export class DesktopStore {
   }
 
   public saveSnapshot(snapshot: ScheduleSnapshot): void {
-    this.snapshot = snapshot;
-    writeJsonAtomic(this.snapshotPath, snapshot);
+    const normalized = {
+      ...snapshot,
+      shutdownSettings: normalizeShutdownSettings(snapshot.shutdownSettings)
+    };
+    this.snapshot = normalized;
+    writeJsonAtomic(this.snapshotPath, normalized);
   }
 
   public saveLocalModifiedSnapshot(snapshot: ScheduleSnapshot): void {
     if (!this.state.hasLocalUnsyncedChanges) {
       this.state.localBaseVersion = this.snapshot?.version ?? snapshot.version;
     }
+    const normalized = {
+      ...snapshot,
+      shutdownSettings: normalizeShutdownSettings(snapshot.shutdownSettings)
+    };
     this.state.hasLocalUnsyncedChanges = true;
     this.state.localModifiedAt = new Date().toISOString();
-    this.snapshot = snapshot;
-    writeJsonAtomic(this.snapshotPath, snapshot);
+    this.snapshot = normalized;
+    writeJsonAtomic(this.snapshotPath, normalized);
     this.saveState();
   }
 
   public markSnapshotSynced(serverSnapshot: ScheduleSnapshot): void {
-    this.snapshot = serverSnapshot;
-    writeJsonAtomic(this.snapshotPath, serverSnapshot);
+    const normalized = {
+      ...serverSnapshot,
+      shutdownSettings: normalizeShutdownSettings(serverSnapshot.shutdownSettings)
+    };
+    this.snapshot = normalized;
+    writeJsonAtomic(this.snapshotPath, normalized);
     this.state.hasLocalUnsyncedChanges = false;
-    this.state.localBaseVersion = serverSnapshot.version;
+    this.state.localBaseVersion = normalized.version;
     this.state.localModifiedAt = null;
     this.saveState();
   }

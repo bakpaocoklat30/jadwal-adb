@@ -355,9 +355,16 @@ test('device snapshot push handles optimistic concurrency conflict and force ove
         dateOverrides: [],
         shutdownSettings: {
           enabled: true,
-          time: '16:15',
-          daysOfWeek: [1, 2, 3, 4, 5],
-          graceSeconds: 20
+          graceSeconds: 20,
+          dayRules: [
+            { dayOfWeek: 0, enabled: false, time: '12:00' },
+            { dayOfWeek: 1, enabled: true, time: '16:15' },
+            { dayOfWeek: 2, enabled: true, time: '16:15' },
+            { dayOfWeek: 3, enabled: true, time: '16:15' },
+            { dayOfWeek: 4, enabled: true, time: '16:15' },
+            { dayOfWeek: 5, enabled: true, time: '12:00' },
+            { dayOfWeek: 6, enabled: true, time: '13:30' }
+          ]
         }
       }
     });
@@ -377,9 +384,12 @@ test('device snapshot push handles optimistic concurrency conflict and force ove
         dateOverrides: [],
         shutdownSettings: {
           enabled: false,
-          time: '16:30',
-          daysOfWeek: [1, 2, 3, 4, 5],
-          graceSeconds: 20
+          graceSeconds: 20,
+          dayRules: [0, 1, 2, 3, 4, 5, 6].map((d) => ({
+            dayOfWeek: d,
+            enabled: false,
+            time: '16:30'
+          }))
         }
       }
     });
@@ -399,9 +409,12 @@ test('device snapshot push handles optimistic concurrency conflict and force ove
         dateOverrides: [],
         shutdownSettings: {
           enabled: false,
-          time: '16:30',
-          daysOfWeek: [1, 2, 3, 4, 5],
-          graceSeconds: 20
+          graceSeconds: 20,
+          dayRules: [0, 1, 2, 3, 4, 5, 6].map((d) => ({
+            dayOfWeek: d,
+            enabled: false,
+            time: '16:30'
+          }))
         }
       }
     });

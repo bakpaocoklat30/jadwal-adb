@@ -17,8 +17,12 @@ import {
 } from 'electron';
 import { io, type Socket } from 'socket.io-client';
 import {
+  createDefaultShutdownSettings,
+  DAY_NAMES_ID,
   findDueSlots,
+  getShutdownRuleForDay,
   getZonedDateParts,
+  normalizeShutdownSettings,
   resolveDaySchedule,
   shouldTriggerAutoShutdown,
   sortSlots,
@@ -403,12 +407,14 @@ async function pushLocalSnapshotToServer(force = false): Promise<{
           profileId: r.profileId
         })),
         dateOverrides: store.snapshot.dateOverrides,
-        shutdownSettings: {
-          enabled: store.snapshot.shutdownSettings.enabled,
-          time: store.snapshot.shutdownSettings.time,
-          daysOfWeek: store.snapshot.shutdownSettings.daysOfWeek,
-          graceSeconds: store.snapshot.shutdownSettings.graceSeconds
-        }
+        shutdownSettings: (() => {
+          const normalized = normalizeShutdownSettings(store.snapshot.shutdownSettings);
+          return {
+            enabled: normalized.enabled,
+            graceSeconds: normalized.graceSeconds,
+            dayRules: normalized.dayRules
+          };
+        })()
       })
     });
 
@@ -507,13 +513,7 @@ function createStarterSnapshot(): ScheduleSnapshot {
       updatedAt: now
     })),
     dateOverrides: [],
-    shutdownSettings: {
-      enabled: false,
-      time: '16:30',
-      daysOfWeek: [1, 2, 3, 4, 5],
-      graceSeconds: 20,
-      updatedAt: now
-    },
+    shutdownSettings: createDefaultShutdownSettings(now),
     generatedAt: now
   };
 }
@@ -853,11 +853,12 @@ function runSchedulerTick(): void {
     shouldTriggerAutoShutdown(snapshot.shutdownSettings, parts.dayOfWeek, parts.timeStr) &&
     !store.hasShutdownTriggered(parts.dateStr)
   ) {
+    const dayRule = getShutdownRuleForDay(snapshot.shutdownSettings, parts.dayOfWeek);
     store.markShutdownTriggered(parts.dateStr);
     initiateShutdown(
       'shutdown',
       snapshot.shutdownSettings.graceSeconds,
-      `Auto-Shutdown terjadwal pukul ${snapshot.shutdownSettings.time}`,
+      `Auto-Shutdown terjadwal (${DAY_NAMES_ID[parts.dayOfWeek]} pukul ${dayRule?.time ?? parts.timeStr})`,
       'Jadwal Otomatis'
     );
   }
