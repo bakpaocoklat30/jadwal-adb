@@ -11,3 +11,11 @@ data/*.db-wal
 *.log
 .DS_Store
 Thumbs.db
+
+# Android
+apps/android/.gradle/
+apps/android/.idea/
+apps/android/local.properties
+apps/android/build/
+apps/android/app/build/
+*.iml
