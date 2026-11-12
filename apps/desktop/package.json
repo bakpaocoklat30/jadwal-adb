@@ -1,0 +1,68 @@
+{
+  "name": "@jadwal-adb/desktop",
+  "version": "1.0.0",
+  "description": "Aplikasi Desktop Bel Sekolah ADB - SMK Negeri 1 Adiwerna",
+  "author": "SMK Negeri 1 Adiwerna",
+  "private": true,
+  "type": "module",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build:electron": "node scripts/build-electron.mjs",
+    "build:renderer": "vite build",
+    "build": "npm run typecheck && npm run build:renderer && npm run build:electron",
+    "build:win": "npm run build && electron-builder --win --x64",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@jadwal-adb/shared": "*",
+    "@tailwindcss/vite": "^4.0.9",
+    "@types/node": "^22.13.10",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "35.7.5",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.25.0",
+    "lucide-react": "^0.475.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "socket.io-client": "^4.8.1",
+    "tailwindcss": "^4.0.9",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0"
+  },
+  "build": {
+    "appId": "id.sch.smkn1adw.beladb",
+    "productName": "Bel Sekolah ADB",
+    "electronVersion": "35.7.5",
+    "npmRebuild": false,
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "build/icon.png",
+      "!node_modules/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "artifactName": "Bel-Sekolah-ADB-Setup-${version}-${arch}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "portable": {
+      "artifactName": "Bel-Sekolah-ADB-Portable-${version}-${arch}.${ext}"
+    }
+  }
+}

@@ -1,0 +1,17 @@
+services:
+  jadwal-adb:
+    build: .
+    container_name: jadwal-adb-server
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      PORT: "4000"
+      HOST: "0.0.0.0"
+      APP_TIMEZONE: "Asia/Jakarta"
+      SCHOOL_NAME: "SMK Negeri 1 Adiwerna"
+      DB_PATH: "/app/data/jadwal-adb.db"
+      JWT_SECRET: "${JWT_SECRET:-}"
+      INITIAL_DEVICE_TOKEN: "${INITIAL_DEVICE_TOKEN:-}"
+    volumes:
+      - ./data:/app/data

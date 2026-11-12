@@ -1,0 +1,12 @@
+node_modules
+.git
+.env
+data
+apps/desktop/release
+apps/desktop/dist
+apps/desktop/dist-electron
+apps/web/dist
+apps/server/dist
+packages/shared/dist
+*.log
+.DS_Store

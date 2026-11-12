@@ -1,0 +1,219 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { io as ioClient } from 'socket.io-client';
+import { buildServerApp } from './app.js';
+import type { ServerConfig } from './config.js';
+
+function testConfig(): ServerConfig {
+  return {
+    port: 0,
+    host: '127.0.0.1',
+    timeZone: 'Asia/Jakarta',
+    schoolName: 'SMK Negeri 1 Adiwerna',
+    dbPath: ':memory:',
+    jwtSecret: 'test-jwt-secret-key-min-32-chars-long',
+    corsOrigin: true,
+    initialDeviceToken: 'test-device-token',
+    webDistDir: '/tmp/nonexistent-web-dist'
+  };
+}
+
+test('auth, role enforcement, schedule mutation, and device sync work end-to-end', async () => {
+  const { app } = await buildServerApp(testConfig());
+
+  try {
+    // 1. Health check
+    const healthRes = await app.inject({ method: 'GET', url: '/api/health' });
+    assert.equal(healthRes.statusCode, 200);
+    const health = healthRes.json();
+    assert.equal(health.ok, true);
+    assert.equal(health.scheduleVersion, 1);
+
+    // 2. Login as admin & piket
+    const adminLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'admin', password: 'admin123' }
+    });
+    assert.equal(adminLogin.statusCode, 200);
+    const adminToken = adminLogin.json().token as string;
+
+    const piketLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'piket', password: 'piket123' }
+    });
+    assert.equal(piketLogin.statusCode, 200);
+    const piketToken = piketLogin.json().token as string;
+
+    // 3. Piket cannot create master profiles (403)
+    const piketCreateProfile = await app.inject({
+      method: 'POST',
+      url: '/api/profiles',
+      headers: { authorization: `Bearer ${piketToken}` },
+      payload: { name: 'Ilegal', description: '', color: '#000', slots: [] }
+    });
+    assert.equal(piketCreateProfile.statusCode, 403);
+
+    // 4. Admin can create profile and version increments
+    const adminCreateProfile = await app.inject({
+      method: 'POST',
+      url: '/api/profiles',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        name: 'Ramadhan',
+        description: 'Jadwal bulan suci',
+        color: '#10b981',
+        slots: [
+          {
+            id: 'slot-ram-1',
+            time: '07:30',
+            label: 'Masuk Ramadhan',
+            enabled: true,
+            steps: [{ id: 'st-1', fileName: 'jam_1.mp3', delayBeforeMs: 0, volume: 100 }]
+          }
+        ]
+      }
+    });
+    assert.equal(adminCreateProfile.statusCode, 201);
+    assert.equal(adminCreateProfile.json().snapshot.version, 2);
+
+    // 5. Piket CAN set today override (e.g. matikan bel hari ini)
+    const todayOverride = await app.inject({
+      method: 'POST',
+      url: '/api/overrides/today',
+      headers: { authorization: `Bearer ${piketToken}` },
+      payload: { profileId: null, note: 'Acara HUT Sekolah' }
+    });
+    assert.equal(todayOverride.statusCode, 201);
+    assert.equal(todayOverride.json().snapshot.version, 3);
+
+    // 6. Device sync requires valid x-device-token
+    const badSync = await app.inject({ method: 'GET', url: '/api/device/sync' });
+    assert.equal(badSync.statusCode, 401);
+
+    const goodSync = await app.inject({
+      method: 'GET',
+      url: '/api/device/sync',
+      headers: { 'x-device-token': 'test-device-token' }
+    });
+    assert.equal(goodSync.statusCode, 200);
+    assert.equal(goodSync.json().snapshot.version, 3);
+
+    // 7. Remote play returns 409 when PC bell is offline
+    const offlineRemote = await app.inject({
+      method: 'POST',
+      url: '/api/remote/shutdown',
+      headers: { authorization: `Bearer ${piketToken}` },
+      payload: { action: 'shutdown', graceSeconds: 20, reason: 'Pulang' }
+    });
+    assert.equal(offlineRemote.statusCode, 409);
+  } finally {
+    await app.close();
+  }
+});
+
+test('realtime Socket.IO device pairing, heartbeat, audio manifest, and remote commands work', async () => {
+  const { app } = await buildServerApp(testConfig());
+  const address = await app.listen({ port: 0, host: '127.0.0.1' });
+
+  try {
+    const loginRes = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'waka', password: 'waka123' }
+    });
+    assert.equal(loginRes.statusCode, 200);
+    const wakaToken = loginRes.json().token as string;
+
+    const deviceSocket = ioClient(address, {
+      auth: { kind: 'device', deviceToken: 'test-device-token' },
+      transports: ['websocket']
+    });
+
+    const initialSnapshot = await new Promise<{ snapshot: { version: number } }>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Timeout waiting for initial snapshot')), 5000);
+      deviceSocket.on('schedule:updated', (payload) => {
+        clearTimeout(timer);
+        resolve(payload);
+      });
+      deviceSocket.on('connect_error', reject);
+    });
+    assert.equal(initialSnapshot.snapshot.version, 1);
+
+    // Send heartbeat with ack and audio manifest
+    const ack = await new Promise<{ scheduleVersion: number }>((resolve) => {
+      deviceSocket.emit(
+        'device:heartbeat',
+        {
+          deviceName: 'PC-BEL-UJI',
+          platform: 'win32',
+          appVersion: '1.0.0',
+          audioDir: 'D:\\Bel\\Audio',
+          audioCount: 1,
+          activeScheduleVersion: 1,
+          clientNowMs: Date.now(),
+          isPlaying: false,
+          currentPlayingLabel: null,
+          shutdownState: 'idle',
+          shutdownAction: null,
+          shutdownRemainingSec: null,
+          shutdownReason: null
+        },
+        resolve
+      );
+    });
+    assert.equal(ack.scheduleVersion, 1);
+
+    deviceSocket.emit('device:audio_manifest', {
+      audioDir: 'D:\\Bel\\Audio',
+      files: [
+        {
+          fileName: 'upacara.mp3',
+          relativePath: 'upacara.mp3',
+          sizeBytes: 12345,
+          updatedAt: new Date().toISOString()
+        }
+      ]
+    });
+
+    // Wait for remote shutdown command triggered by Waka
+    const commandPromise = new Promise<{ type: string; action?: string; requestedBy: string }>(
+      (resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Timeout waiting for remote command')), 5000);
+        deviceSocket.on('device:command', (cmd) => {
+          clearTimeout(timer);
+          resolve(cmd);
+        });
+      }
+    );
+
+    const shutdownRes = await app.inject({
+      method: 'POST',
+      url: '/api/remote/shutdown',
+      headers: { authorization: `Bearer ${wakaToken}` },
+      payload: { action: 'shutdown', graceSeconds: 15, reason: 'Uji shutdown' }
+    });
+    assert.equal(shutdownRes.statusCode, 200);
+
+    const cmd = await commandPromise;
+    assert.equal(cmd.type, 'shutdown_pc');
+    assert.equal(cmd.action, 'shutdown');
+    assert.equal(cmd.requestedBy, 'Waka Kurikulum');
+
+    // Verify status reflects online PC
+    const statusRes = await app.inject({
+      method: 'GET',
+      url: '/api/device/status',
+      headers: { authorization: `Bearer ${wakaToken}` }
+    });
+    assert.equal(statusRes.statusCode, 200);
+    assert.equal(statusRes.json().status.online, true);
+    assert.equal(statusRes.json().status.deviceName, 'PC-BEL-UJI');
+    assert.equal(statusRes.json().audioFiles.length, 1);
+
+    deviceSocket.disconnect();
+  } finally {
+    await app.close();
+  }
+});
