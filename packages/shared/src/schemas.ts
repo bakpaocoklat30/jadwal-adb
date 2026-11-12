@@ -66,6 +66,46 @@ export const shutdownSettingsSchema = z.object({
   dayRules: z.array(shutdownDayRuleSchema).length(7)
 });
 
+export const backupSettingsSchema = z.object({
+  enabled: z.boolean(),
+  time: timeHHMMSchema,
+  retainCount: z.number().int().min(1).max(90).default(14)
+});
+
+export const restoreScheduleJsonSchema = z.object({
+  profiles: z.array(
+    z.object({
+      id: z.string().min(1),
+      name: z.string().min(1).max(80),
+      description: z.string().max(240).default(''),
+      color: z.string().min(1).max(32).default('#2563eb'),
+      slots: z.array(scheduleSlotSchema),
+      createdAt: z.string().optional(),
+      updatedAt: z.string().optional()
+    })
+  ),
+  weeklyRules: z
+    .array(
+      z.object({
+        dayOfWeek: z.number().int().min(0).max(6),
+        profileId: z.string().nullable()
+      })
+    )
+    .length(7),
+  dateOverrides: z.array(
+    z.object({
+      id: z.string().min(1),
+      startDate: dateYYYYMMDDSchema,
+      endDate: dateYYYYMMDDSchema,
+      profileId: z.string().nullable(),
+      note: z.string().min(1).max(160),
+      createdBy: z.string().max(80).default('Restore Backup'),
+      createdAt: z.string().optional()
+    })
+  ),
+  shutdownSettings: z.unknown()
+});
+
 export const loginSchema = z.object({
   username: z.string().min(1).max(64),
   password: z.string().min(1).max(128)

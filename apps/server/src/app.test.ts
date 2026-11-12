@@ -7,14 +7,15 @@ import { io as ioClient } from 'socket.io-client';
 import { buildServerApp } from './app.js';
 import type { ServerConfig } from './config.js';
 
-function testConfig(uploadsDir: string): ServerConfig {
+function testConfig(tmpRoot: string): ServerConfig {
   return {
     port: 0,
     host: '127.0.0.1',
     timeZone: 'Asia/Jakarta',
     schoolName: 'SMK Negeri 1 Adiwerna',
     dbPath: ':memory:',
-    uploadsDir,
+    uploadsDir: path.join(tmpRoot, 'uploads'),
+    backupsDir: path.join(tmpRoot, 'backups'),
     jwtSecret: 'test-jwt-secret-key-min-32-chars-long',
     corsOrigin: true,
     initialDeviceToken: 'test-device-token',
@@ -420,6 +421,112 @@ test('device snapshot push handles optimistic concurrency conflict and force ove
     });
     assert.equal(pushForce.statusCode, 200);
     assert.equal(pushForce.json().snapshot.version, 3);
+  } finally {
+    await app.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('manual DB backup, auto-backup settings, download, delete, and JSON schedule restore work', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jadwal-adb-test-'));
+  const { app } = await buildServerApp(testConfig(tmpDir));
+
+  try {
+    const adminLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'admin', password: 'admin123' }
+    });
+    const adminToken = adminLogin.json().token as string;
+
+    const wakaLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'waka', password: 'waka123' }
+    });
+    const wakaToken = wakaLogin.json().token as string;
+
+    // 1. Waka cannot access full .db backup settings (403)
+    const wakaBackupList = await app.inject({
+      method: 'GET',
+      url: '/api/backups',
+      headers: { authorization: `Bearer ${wakaToken}` }
+    });
+    assert.equal(wakaBackupList.statusCode, 403);
+
+    // 2. Admin can update auto-backup settings and trigger manual .db backup
+    const settingsRes = await app.inject({
+      method: 'PUT',
+      url: '/api/backups/settings',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { enabled: true, time: '03:15', retainCount: 7 }
+    });
+    assert.equal(settingsRes.statusCode, 200);
+    assert.equal(settingsRes.json().settings.time, '03:15');
+
+    const createRes = await app.inject({
+      method: 'POST',
+      url: '/api/backups/create',
+      headers: { authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(createRes.statusCode, 200);
+    const createdFileName = createRes.json().file.fileName as string;
+    assert.ok(createdFileName.startsWith('backup-manual-'));
+    assert.ok(createRes.json().file.sizeBytes > 0);
+
+    // 3. Download .db backup
+    const dlRes = await app.inject({
+      method: 'GET',
+      url: `/api/backups/${encodeURIComponent(createdFileName)}/download`,
+      headers: { authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(dlRes.statusCode, 200);
+    assert.ok(dlRes.rawPayload.subarray(0, 15).toString('utf8').includes('SQLite format 3'));
+
+    // 4. Waka can export schedule JSON and restore modified schedule JSON
+    const exportRes = await app.inject({
+      method: 'GET',
+      url: '/api/backups/schedule-json',
+      headers: { authorization: `Bearer ${wakaToken}` }
+    });
+    assert.equal(exportRes.statusCode, 200);
+    const exported = exportRes.json();
+    assert.ok(Array.isArray(exported.profiles));
+
+    const restoreRes = await app.inject({
+      method: 'POST',
+      url: '/api/backups/restore-schedule',
+      headers: { authorization: `Bearer ${wakaToken}` },
+      payload: {
+        ...exported,
+        profiles: [
+          {
+            id: 'restored-1',
+            name: 'Profil Hasil Restore',
+            description: 'Pulihan backup',
+            color: '#059669',
+            slots: []
+          }
+        ],
+        weeklyRules: [0, 1, 2, 3, 4, 5, 6].map((d) => ({
+          dayOfWeek: d,
+          profileId: d === 1 ? 'restored-1' : null
+        })),
+        dateOverrides: []
+      }
+    });
+    assert.equal(restoreRes.statusCode, 200);
+    assert.equal(restoreRes.json().snapshot.profiles[0].name, 'Profil Hasil Restore');
+    // Restore creates an automatic safety backup before overwriting
+    assert.ok(restoreRes.json().files.length >= 2);
+
+    // 5. Admin can delete a backup
+    const delRes = await app.inject({
+      method: 'DELETE',
+      url: `/api/backups/${encodeURIComponent(createdFileName)}`,
+      headers: { authorization: `Bearer ${adminToken}` }
+    });
+    assert.equal(delRes.statusCode, 200);
   } finally {
     await app.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -4,6 +4,8 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
   AudioFileEntry,
+  BackupFileInfo,
+  BackupSettings,
   BellLog,
   BellLogInput,
   DateOverride,
@@ -215,6 +217,17 @@ export class AppDatabase {
     if (!this.getMeta('shutdown_settings')) {
       const initialShutdown = createDefaultShutdownSettings(now);
       this.setMeta('shutdown_settings', JSON.stringify(initialShutdown));
+    }
+
+    if (!this.getMeta('backup_settings')) {
+      const initialBackup: BackupSettings = {
+        enabled: true,
+        time: '02:00',
+        retainCount: 14,
+        lastBackupAt: null,
+        updatedAt: now
+      };
+      this.setMeta('backup_settings', JSON.stringify(initialBackup));
     }
 
     if (!this.getMeta('device_status')) {
@@ -960,5 +973,116 @@ export class AppDatabase {
       .prepare('DELETE FROM uploaded_audio WHERE file_name = ?')
       .run(fileName);
     return res.changes > 0;
+  }
+
+  // --- Backup Settings & Snapshots ---
+  public getBackupSettings(): BackupSettings {
+    const raw = this.getMeta('backup_settings');
+    if (!raw) {
+      return {
+        enabled: true,
+        time: '02:00',
+        retainCount: 14,
+        lastBackupAt: null,
+        updatedAt: new Date().toISOString()
+      };
+    }
+    return JSON.parse(raw) as BackupSettings;
+  }
+
+  public updateBackupSettings(
+    patch: Partial<Pick<BackupSettings, 'enabled' | 'time' | 'retainCount' | 'lastBackupAt'>>
+  ): BackupSettings {
+    const current = this.getBackupSettings();
+    const next: BackupSettings = {
+      ...current,
+      ...patch,
+      updatedAt: new Date().toISOString()
+    };
+    this.setMeta('backup_settings', JSON.stringify(next));
+    return next;
+  }
+
+  public createDatabaseBackup(backupsDir: string, kind: 'auto' | 'manual'): BackupFileInfo {
+    fs.mkdirSync(backupsDir, { recursive: true });
+    const now = new Date();
+    const stamp = now
+      .toISOString()
+      .replace(/[:.]/g, '-')
+      .replace('T', '_')
+      .replace('Z', '');
+    const fileName = `backup-${kind}-${stamp}.db`;
+    const targetPath = path.join(backupsDir, fileName);
+    const tmpPath = `${targetPath}.tmp`;
+
+    if (fs.existsSync(tmpPath)) {
+      fs.unlinkSync(tmpPath);
+    }
+    const escapedPath = tmpPath.replace(/'/g, "''");
+    this.sqlite.exec(`VACUUM INTO '${escapedPath}';`);
+    fs.renameSync(tmpPath, targetPath);
+
+    const stat = fs.statSync(targetPath);
+    const createdAt = now.toISOString();
+    this.updateBackupSettings({ lastBackupAt: createdAt });
+
+    const settings = this.getBackupSettings();
+    this.pruneBackups(backupsDir, settings.retainCount);
+
+    return {
+      fileName,
+      sizeBytes: stat.size,
+      createdAt,
+      kind
+    };
+  }
+
+  public listBackups(backupsDir: string): BackupFileInfo[] {
+    if (!fs.existsSync(backupsDir)) return [];
+    const entries = fs.readdirSync(backupsDir, { withFileTypes: true });
+    const items: BackupFileInfo[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.db')) continue;
+      const fullPath = path.join(backupsDir, entry.name);
+      const stat = fs.statSync(fullPath);
+      const kind: 'auto' | 'manual' = entry.name.startsWith('backup-auto-') ? 'auto' : 'manual';
+      items.push({
+        fileName: entry.name,
+        sizeBytes: stat.size,
+        createdAt: stat.mtime.toISOString(),
+        kind
+      });
+    }
+
+    items.sort((a, b) => b.fileName.localeCompare(a.fileName));
+    return items;
+  }
+
+  public resolveBackupPath(backupsDir: string, fileName: string): string | null {
+    const root = path.resolve(backupsDir);
+    const safeBase = path.basename(fileName);
+    if (!safeBase.endsWith('.db')) return null;
+    const target = path.resolve(root, safeBase);
+    if (!target.startsWith(root + path.sep)) return null;
+    return target;
+  }
+
+  public deleteBackup(backupsDir: string, fileName: string): boolean {
+    const target = this.resolveBackupPath(backupsDir, fileName);
+    if (!target || !fs.existsSync(target)) return false;
+    fs.unlinkSync(target);
+    return true;
+  }
+
+  private pruneBackups(backupsDir: string, retainCount: number): void {
+    const all = this.listBackups(backupsDir);
+    const toDelete = all.slice(Math.max(1, retainCount));
+    for (const item of toDelete) {
+      const p = this.resolveBackupPath(backupsDir, item.fileName);
+      if (p && fs.existsSync(p)) {
+        fs.unlinkSync(p);
+      }
+    }
   }
 }

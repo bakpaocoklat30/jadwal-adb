@@ -2,6 +2,8 @@ import { io, type Socket } from 'socket.io-client';
 import type {
   AudioFileEntry,
   AudioStep,
+  BackupFileInfo,
+  BackupSettings,
   BellLog,
   DeviceStatus,
   GenerateScheduleInput,
@@ -273,6 +275,60 @@ export const api = {
     }
     const blob = await res.blob();
     return URL.createObjectURL(blob);
+  },
+  getBackups() {
+    return request<{ settings: BackupSettings; files: BackupFileInfo[] }>('/api/backups');
+  },
+  updateBackupSettings(payload: { enabled: boolean; time: string; retainCount: number }) {
+    return request<{ settings: BackupSettings }>('/api/backups/settings', {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    });
+  },
+  createBackup() {
+    return request<{
+      file: BackupFileInfo;
+      settings: BackupSettings;
+      files: BackupFileInfo[];
+    }>('/api/backups/create', {
+      method: 'POST',
+      body: '{}'
+    });
+  },
+  deleteBackup(fileName: string) {
+    return request<{ ok: boolean; files: BackupFileInfo[] }>(
+      `/api/backups/${encodeURIComponent(fileName)}`,
+      { method: 'DELETE' }
+    );
+  },
+  async downloadAuthorizedFile(url: string, fallbackName: string): Promise<void> {
+    const token = getStoredToken();
+    const headers = new Headers();
+    if (token) {
+      headers.set('Authorization', `Bearer ${token}`);
+    }
+    const res = await fetch(url, { headers });
+    if (!res.ok) {
+      throw new ApiError(`Gagal mengunduh file (${res.status})`, res.status);
+    }
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = fallbackName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(objectUrl);
+  },
+  restoreScheduleJson(payload: unknown) {
+    return request<{ snapshot: ScheduleSnapshot; files: BackupFileInfo[] }>(
+      '/api/backups/restore-schedule',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }
+    );
   }
 };
 

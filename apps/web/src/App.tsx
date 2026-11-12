@@ -347,6 +347,7 @@ export function App() {
             }, 'Pengaturan Auto-Shutdown disimpan')
           }
           onPasswordChanged={(updated) => setUser(updated)}
+          onSnapshotRestored={(nextSnap) => setSnapshot(nextSnap)}
           onNotify={(msg) => notify(msg, 'ok')}
         />
       )}

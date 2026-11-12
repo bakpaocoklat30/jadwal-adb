@@ -12,6 +12,7 @@ export interface ServerConfig {
   schoolName: string;
   dbPath: string;
   uploadsDir: string;
+  backupsDir: string;
   jwtSecret: string | null;
   corsOrigin: string | string[] | boolean;
   initialDeviceToken: string | null;
@@ -33,6 +34,14 @@ export function loadConfig(): ServerConfig {
   const uploadsDir = path.isAbsolute(uploadsDirRaw)
     ? uploadsDirRaw
     : path.resolve(rootDir, uploadsDirRaw);
+  const backupsDirRaw =
+    process.env.BACKUPS_DIR ||
+    (dbPath === ':memory:'
+      ? path.join(os.tmpdir(), 'jadwal-adb-backups')
+      : path.join(path.dirname(dbPath), 'backups'));
+  const backupsDir = path.isAbsolute(backupsDirRaw)
+    ? backupsDirRaw
+    : path.resolve(rootDir, backupsDirRaw);
   const corsRaw = process.env.CORS_ORIGIN || '*';
   const corsOrigin = corsRaw === '*' ? true : corsRaw.split(',').map((s) => s.trim());
 
@@ -43,6 +52,7 @@ export function loadConfig(): ServerConfig {
     schoolName,
     dbPath,
     uploadsDir,
+    backupsDir,
     jwtSecret: process.env.JWT_SECRET?.trim() || null,
     corsOrigin,
     initialDeviceToken: process.env.INITIAL_DEVICE_TOKEN?.trim() || null,

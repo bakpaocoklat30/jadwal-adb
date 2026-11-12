@@ -136,6 +136,13 @@ export class DesktopStore {
       ...snapshot,
       shutdownSettings: normalizeShutdownSettings(snapshot.shutdownSettings)
     };
+    if (fs.existsSync(this.snapshotPath)) {
+      try {
+        fs.copyFileSync(this.snapshotPath, `${this.snapshotPath}.bak`);
+      } catch {
+        // Best-effort local backup
+      }
+    }
     this.snapshot = normalized;
     writeJsonAtomic(this.snapshotPath, normalized);
   }
@@ -148,6 +155,13 @@ export class DesktopStore {
       ...snapshot,
       shutdownSettings: normalizeShutdownSettings(snapshot.shutdownSettings)
     };
+    if (fs.existsSync(this.snapshotPath)) {
+      try {
+        fs.copyFileSync(this.snapshotPath, `${this.snapshotPath}.bak`);
+      } catch {
+        // Best-effort local backup
+      }
+    }
     this.state.hasLocalUnsyncedChanges = true;
     this.state.localModifiedAt = new Date().toISOString();
     this.snapshot = normalized;

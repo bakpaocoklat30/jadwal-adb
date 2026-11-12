@@ -65,6 +65,21 @@ export interface ShutdownSettings {
   updatedAt: string;
 }
 
+export interface BackupSettings {
+  enabled: boolean;
+  time: string; // HH:MM
+  retainCount: number;
+  lastBackupAt: string | null;
+  updatedAt: string;
+}
+
+export interface BackupFileInfo {
+  fileName: string;
+  sizeBytes: number;
+  createdAt: string;
+  kind: 'auto' | 'manual';
+}
+
 export interface ScheduleSnapshot {
   version: number;
   schoolName: string;

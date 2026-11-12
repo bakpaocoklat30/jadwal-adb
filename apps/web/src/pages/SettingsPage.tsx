@@ -1,8 +1,23 @@
-import { useEffect, useState } from 'react';
-import { Copy, KeyRound, Plus, Power, RefreshCw, Shield, Trash2, Users } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import {
+  Copy,
+  DatabaseBackup,
+  Download,
+  KeyRound,
+  Plus,
+  Power,
+  RefreshCw,
+  Shield,
+  Trash2,
+  Upload,
+  Users
+} from 'lucide-react';
 import {
   DAY_NAMES_ID,
   normalizeShutdownSettings,
+  type BackupFileInfo,
+  type BackupSettings,
+  type ScheduleSnapshot,
   type ShutdownDayRule,
   type ShutdownSettings,
   type UserPublic,
@@ -15,6 +30,7 @@ interface SettingsPageProps {
   shutdownSettings: ShutdownSettings;
   onUpdateShutdownSettings: (settings: Omit<ShutdownSettings, 'updatedAt'>) => Promise<void>;
   onPasswordChanged: (user: UserPublic) => void;
+  onSnapshotRestored: (snapshot: ScheduleSnapshot) => void;
   onNotify: (message: string) => void;
 }
 
@@ -44,6 +60,7 @@ export function SettingsPage({
   shutdownSettings,
   onUpdateShutdownSettings,
   onPasswordChanged,
+  onSnapshotRestored,
   onNotify
 }: SettingsPageProps) {
   const isAdmin = currentUser.role === 'admin';
@@ -69,6 +86,14 @@ export function SettingsPage({
   const [newRole, setNewRole] = useState<UserRole>('piket');
   const [newUserPass, setNewUserPass] = useState('');
 
+  // Backup & Restore state
+  const [backupSettings, setBackupSettings] = useState<BackupSettings | null>(null);
+  const [backupFiles, setBackupFiles] = useState<BackupFileInfo[]>([]);
+  const [savingBackup, setSavingBackup] = useState(false);
+  const [creatingBackup, setCreatingBackup] = useState(false);
+  const [restoringJson, setRestoringJson] = useState(false);
+  const restoreInputRef = useRef<HTMLInputElement | null>(null);
+
   useEffect(() => {
     const normalized = normalizeShutdownSettings(shutdownSettings);
     setSdEnabled(normalized.enabled);
@@ -80,6 +105,10 @@ export function SettingsPage({
     if (!isAdmin) return;
     void api.getDeviceToken().then((r) => setDeviceToken(r.deviceToken));
     void api.listUsers().then((r) => setUsers(r.users));
+    void api.getBackups().then((r) => {
+      setBackupSettings(r.settings);
+      setBackupFiles(r.files);
+    });
   }, [isAdmin]);
 
   const handleSaveShutdown = async (e: React.FormEvent) => {
@@ -494,6 +523,256 @@ export function SettingsPage({
               ))}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Backup & Restore section */}
+      {(isAdmin || canEditShutdown) && (
+        <div className="grid gap-5 lg:grid-cols-2">
+          {/* JSON Schedule Export & Restore (Admin + Waka) */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+            <h3 className="flex items-center gap-2 text-lg font-bold text-slate-900">
+              <Download className="h-5 w-5 text-blue-600" />
+              Export & Restore Jadwal (JSON)
+            </h3>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Unduh cadangan profil jadwal, aturan mingguan, kalender ujian/libur, dan auto-shutdown
+              dalam format `.json`, atau pulihkan kembali kapan saja.
+            </p>
+
+            <div className="mt-4 flex flex-col gap-2.5 sm:flex-row">
+              <button
+                type="button"
+                onClick={async () => {
+                  const dateStr = new Date().toISOString().slice(0, 10);
+                  await api.downloadAuthorizedFile(
+                    '/api/backups/schedule-json',
+                    `jadwal-adb-${dateStr}.json`
+                  );
+                  onNotify('File backup jadwal (.json) diunduh');
+                }}
+                className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-blue-700"
+              >
+                <Download className="h-4 w-4" />
+                Download Backup Jadwal (.json)
+              </button>
+
+              <label className="inline-flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-semibold text-slate-800 hover:bg-slate-100">
+                <Upload className="h-4 w-4" />
+                {restoringJson ? 'Memulihkan...' : 'Restore dari File (.json)'}
+                <input
+                  ref={restoreInputRef}
+                  type="file"
+                  accept=".json,application/json"
+                  className="hidden"
+                  disabled={restoringJson}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    if (
+                      !confirm(
+                        `Pulihkan jadwal dari "${file.name}"? Jadwal saat ini akan diganti (backup keamanan otomatis dibuat di server sebelum menimpa).`
+                      )
+                    ) {
+                      e.target.value = '';
+                      return;
+                    }
+                    setRestoringJson(true);
+                    try {
+                      const raw = JSON.parse(await file.text()) as unknown;
+                      const res = await api.restoreScheduleJson(raw);
+                      onSnapshotRestored(res.snapshot);
+                      if (isAdmin) {
+                        setBackupFiles(res.files);
+                      }
+                      onNotify('Jadwal berhasil dipulihkan & disinkronkan ke PC Bel');
+                    } catch (err) {
+                      onNotify(
+                        err instanceof Error ? err.message : 'File backup JSON tidak valid'
+                      );
+                    } finally {
+                      setRestoringJson(false);
+                      if (restoreInputRef.current) restoreInputRef.current.value = '';
+                    }
+                  }}
+                />
+              </label>
+            </div>
+          </div>
+
+          {/* Full SQLite Database Auto/Manual Backup (Admin only) */}
+          {isAdmin && backupSettings && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <h3 className="flex items-center gap-2 text-lg font-bold text-slate-900">
+                    <DatabaseBackup className="h-5 w-5 text-emerald-600" />
+                    Backup Database Server (.db)
+                  </h3>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Cadangan penuh SQLite (user, token, jadwal, log). Tersimpan di volume{' '}
+                    <code className="rounded bg-slate-100 px-1">data/backups/</code>.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={creatingBackup}
+                  onClick={async () => {
+                    setCreatingBackup(true);
+                    try {
+                      const res = await api.createBackup();
+                      setBackupSettings(res.settings);
+                      setBackupFiles(res.files);
+                      onNotify(`Backup manual dibuat: ${res.file.fileName}`);
+                    } finally {
+                      setCreatingBackup(false);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  <DatabaseBackup className="h-3.5 w-3.5" />
+                  {creatingBackup ? 'Membackup...' : 'Backup Sekarang'}
+                </button>
+              </div>
+
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  setSavingBackup(true);
+                  try {
+                    const res = await api.updateBackupSettings({
+                      enabled: backupSettings.enabled,
+                      time: backupSettings.time,
+                      retainCount: backupSettings.retainCount
+                    });
+                    setBackupSettings(res.settings);
+                    onNotify('Pengaturan auto-backup disimpan');
+                  } finally {
+                    setSavingBackup(false);
+                  }
+                }}
+                className="mt-4 grid gap-3 rounded-xl border border-slate-100 bg-slate-50 p-3 sm:grid-cols-3"
+              >
+                <label className="flex items-center gap-2 text-xs font-semibold text-slate-800 sm:col-span-3">
+                  <input
+                    type="checkbox"
+                    checked={backupSettings.enabled}
+                    onChange={(e) =>
+                      setBackupSettings((prev) =>
+                        prev ? { ...prev, enabled: e.target.checked } : prev
+                      )
+                    }
+                    className="h-4 w-4 rounded"
+                  />
+                  Aktifkan Auto-Backup Harian Otomatis
+                </label>
+
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-slate-600">
+                    Jam Backup (WIB)
+                  </label>
+                  <input
+                    type="time"
+                    value={backupSettings.time}
+                    onChange={(e) =>
+                      setBackupSettings((prev) =>
+                        prev ? { ...prev, time: e.target.value } : prev
+                      )
+                    }
+                    className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-[11px] font-medium text-slate-600">
+                    Simpan Maksimal
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={90}
+                    value={backupSettings.retainCount}
+                    onChange={(e) =>
+                      setBackupSettings((prev) =>
+                        prev ? { ...prev, retainCount: Number(e.target.value || 14) } : prev
+                      )
+                    }
+                    className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold"
+                  />
+                </div>
+
+                <div className="flex items-end">
+                  <button
+                    type="submit"
+                    disabled={savingBackup}
+                    className="w-full rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+                  >
+                    {savingBackup ? 'Menyimpan...' : 'Simpan Jadwal'}
+                  </button>
+                </div>
+              </form>
+
+              <div className="mt-4 max-h-56 divide-y divide-slate-100 overflow-y-auto">
+                {backupFiles.length === 0 ? (
+                  <p className="py-4 text-center text-xs text-slate-500">
+                    Belum ada file backup database. Klik <strong>Backup Sekarang</strong> untuk
+                    membuat yang pertama.
+                  </p>
+                ) : (
+                  backupFiles.map((f) => (
+                    <div key={f.fileName} className="flex items-center justify-between gap-2 py-2 text-xs">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate font-mono font-medium text-slate-800">
+                            {f.fileName}
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                              f.kind === 'auto'
+                                ? 'bg-blue-100 text-blue-700'
+                                : 'bg-emerald-100 text-emerald-700'
+                            }`}
+                          >
+                            {f.kind === 'auto' ? 'Auto' : 'Manual'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400">
+                          {(f.sizeBytes / 1024).toFixed(0)} KB •{' '}
+                          {new Date(f.createdAt).toLocaleString('id-ID')}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void api.downloadAuthorizedFile(
+                              `/api/backups/${encodeURIComponent(f.fileName)}/download`,
+                              f.fileName
+                            )
+                          }
+                          className="rounded-lg border border-slate-200 px-2.5 py-1 font-medium text-slate-700 hover:bg-slate-50"
+                        >
+                          Unduh
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (confirm(`Hapus file backup "${f.fileName}"?`)) {
+                              const res = await api.deleteBackup(f.fileName);
+                              setBackupFiles(res.files);
+                            }
+                          }}
+                          className="rounded-lg p-1.5 text-rose-500 hover:bg-rose-50"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

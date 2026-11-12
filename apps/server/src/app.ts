@@ -4,10 +4,12 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { getZonedDateParts } from '@jadwal-adb/shared';
 import type { ServerConfig } from './config.js';
 import { AppDatabase } from './db.js';
 import { registerAudioRoutes } from './routes/audio.js';
 import { registerAuthRoutes } from './routes/auth.js';
+import { registerBackupRoutes } from './routes/backup.js';
 import { registerDeviceRoutes } from './routes/device.js';
 import { registerRemoteRoutes } from './routes/remote.js';
 import { registerScheduleRoutes } from './routes/schedule.js';
@@ -57,9 +59,27 @@ export async function buildServerApp(config: ServerConfig): Promise<BuiltApp> {
 
   registerAuthRoutes(app, db);
   registerAudioRoutes(app, db, hub, config.uploadsDir);
+  registerBackupRoutes(app, db, hub, config.backupsDir, config.timeZone);
   registerScheduleRoutes(app, db, hub);
   registerDeviceRoutes(app, db, hub);
   registerRemoteRoutes(app, db, hub);
+
+  // Automatic daily database backup scheduler
+  let lastAutoBackupDate = '';
+  const backupInterval = setInterval(() => {
+    try {
+      const backupSettings = db.getBackupSettings();
+      if (!backupSettings.enabled) return;
+      const parts = getZonedDateParts(Date.now(), config.timeZone);
+      if (parts.timeStr === backupSettings.time && lastAutoBackupDate !== parts.dateStr) {
+        lastAutoBackupDate = parts.dateStr;
+        db.createDatabaseBackup(config.backupsDir, 'auto');
+      }
+    } catch {
+      // Keep server healthy even if backup tick fails
+    }
+  }, 30_000);
+  backupInterval.unref();
 
   if (fs.existsSync(config.webDistDir)) {
     await app.register(fastifyStatic, {
@@ -80,6 +100,7 @@ export async function buildServerApp(config: ServerConfig): Promise<BuiltApp> {
   }
 
   app.addHook('onClose', async () => {
+    clearInterval(backupInterval);
     hub.io.close();
     db.sqlite.close();
   });

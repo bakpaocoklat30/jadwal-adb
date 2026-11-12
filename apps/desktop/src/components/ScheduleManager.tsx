@@ -1,15 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   BellOff,
   CalendarDays,
   Clock,
   Copy,
+  Download,
   Layers,
   Plus,
   Power,
   RotateCcw,
   Save,
   Trash2,
+  Upload,
   Wand2
 } from 'lucide-react';
 import {
@@ -18,6 +20,7 @@ import {
   generateScheduleSlots,
   getZonedDateParts,
   normalizeShutdownSettings,
+  restoreScheduleJsonSchema,
   shiftTimeHHMM,
   sortSlots,
   type AudioFileEntry,
@@ -64,6 +67,7 @@ export function ScheduleManager({
   const [hasEdits, setHasEdits] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ text: string; ok: boolean } | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   // Generator state
   const [showGen, setShowGen] = useState(false);
@@ -314,6 +318,93 @@ export function ScheduleManager({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              const blob = new Blob([JSON.stringify(draft, null, 2)], {
+                type: 'application/json;charset=utf-8'
+              });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `jadwal-adb-lokal-${todayStr}.json`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+              setFeedback({ text: 'Backup jadwal (.json) berhasil diekspor.', ok: true });
+            }}
+            className="inline-flex items-center gap-1 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700"
+            title="Download backup jadwal lokal ke file JSON"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Export JSON
+          </button>
+
+          <label className="inline-flex cursor-pointer items-center gap-1 rounded-xl border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-slate-700">
+            <Upload className="h-3.5 w-3.5" />
+            Restore JSON
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                try {
+                  const parsedRaw = JSON.parse(await file.text()) as unknown;
+                  const validated = restoreScheduleJsonSchema.safeParse(parsedRaw);
+                  if (!validated.success) {
+                    setFeedback({
+                      text: validated.error.issues[0]?.message || 'Format file JSON tidak valid.',
+                      ok: false
+                    });
+                    return;
+                  }
+                  if (
+                    !confirm(
+                      `Muat jadwal dari "${file.name}" ke editor lokal? Klik Simpan & Terapkan setelahnya untuk mengaktifkan.`
+                    )
+                  ) {
+                    return;
+                  }
+                  const now = new Date().toISOString();
+                  const nextSnap: ScheduleSnapshot = {
+                    ...draft,
+                    profiles: validated.data.profiles.map((p) => ({
+                      ...p,
+                      slots: sortSlots(p.slots),
+                      createdAt: p.createdAt || now,
+                      updatedAt: now
+                    })),
+                    weeklyRules: validated.data.weeklyRules.map((r) => ({
+                      ...r,
+                      updatedAt: now
+                    })),
+                    dateOverrides: validated.data.dateOverrides.map((o) => ({
+                      ...o,
+                      createdAt: o.createdAt || now
+                    })),
+                    shutdownSettings: normalizeShutdownSettings(validated.data.shutdownSettings),
+                    generatedAt: now
+                  };
+                  setDraft(nextSnap);
+                  setSelectedProfileId(nextSnap.profiles[0]?.id ?? '');
+                  setHasEdits(true);
+                  setFeedback({
+                    text: 'File backup dimuat ke editor. Klik "Simpan & Terapkan Jadwal" untuk mengaktifkan.',
+                    ok: true
+                  });
+                } catch {
+                  setFeedback({ text: 'Gagal membaca file JSON.', ok: false });
+                } finally {
+                  if (importInputRef.current) importInputRef.current.value = '';
+                }
+              }}
+            />
+          </label>
+
           {hasEdits && (
             <button
               type="button"
