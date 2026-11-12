@@ -4,7 +4,7 @@ services:
     container_name: jadwal-adb-server
     restart: unless-stopped
     ports:
-      - "4000:4000"
+      - "${APP_PORT:-7029}:4000"
     environment:
       PORT: "4000"
       HOST: "0.0.0.0"

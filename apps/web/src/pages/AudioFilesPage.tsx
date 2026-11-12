@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
 import { AlertTriangle, FileAudio, Play, Search } from 'lucide-react';
-import type {
-  AudioFileEntry,
-  AudioStep,
-  DeviceStatus,
-  ScheduleSnapshot
+import {
+  createId,
+  type AudioFileEntry,
+  type AudioStep,
+  type DeviceStatus,
+  type ScheduleSnapshot
 } from '@jadwal-adb/shared';
 
 interface AudioFilesPageProps {
@@ -119,7 +120,7 @@ export function AudioFilesPage({
                   onClick={() =>
                     onPlayManual(`Tes Audio: ${file.fileName}`, [
                       {
-                        id: crypto.randomUUID(),
+                        id: createId(),
                         fileName: file.relativePath,
                         delayBeforeMs: 0,
                         volume: 100

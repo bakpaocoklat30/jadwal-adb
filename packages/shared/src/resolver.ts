@@ -195,9 +195,25 @@ export function shouldTriggerAutoShutdown(
   return shutdown.time === timeStr;
 }
 
+export function createId(): string {
+  const webCrypto = globalThis.crypto;
+  if (webCrypto && typeof webCrypto.randomUUID === 'function') {
+    return webCrypto.randomUUID();
+  }
+  if (webCrypto && typeof webCrypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16);
+    webCrypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+    bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function makeStep(fileName: string, delayBeforeMs = 0, volume = 100): AudioStep {
   return {
-    id: crypto.randomUUID(),
+    id: createId(),
     fileName,
     delayBeforeMs,
     volume
@@ -223,7 +239,7 @@ export function generateScheduleSlots(input: GenerateScheduleInput): ScheduleSlo
     }
 
     slots.push({
-      id: crypto.randomUUID(),
+      id: createId(),
       time: minutesToTime(cursorMinutes),
       label: `Jam Pelajaran ke-${lesson}`,
       enabled: true,
@@ -235,7 +251,7 @@ export function generateScheduleSlots(input: GenerateScheduleInput): ScheduleSlo
     const brk = breaksByLesson.get(lesson);
     if (brk) {
       slots.push({
-        id: crypto.randomUUID(),
+        id: createId(),
         time: minutesToTime(cursorMinutes),
         label: brk.label,
         enabled: true,
@@ -247,7 +263,7 @@ export function generateScheduleSlots(input: GenerateScheduleInput): ScheduleSlo
 
   if (input.endOfDayFileName?.trim()) {
     slots.push({
-      id: crypto.randomUUID(),
+      id: createId(),
       time: minutesToTime(cursorMinutes),
       label: input.endOfDayLabel?.trim() || 'Bel Pulang',
       enabled: true,

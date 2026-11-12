@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { Plus, Trash2, Wand2, X } from 'lucide-react';
-import type {
-  AudioFileEntry,
-  GenerateScheduleBreak,
-  ScheduleProfile,
-  ScheduleSlot
+import {
+  createId,
+  type AudioFileEntry,
+  type GenerateScheduleBreak,
+  type ScheduleProfile,
+  type ScheduleSlot
 } from '@jadwal-adb/shared';
 import { api } from '../api.js';
 
@@ -87,13 +88,13 @@ export function ProfileEditorModal({
     setSlots((prev) => [
       ...prev,
       {
-        id: crypto.randomUUID(),
+        id: createId(),
         time: '07:00',
         label: 'Jam Baru',
         enabled: true,
         steps: [
           {
-            id: crypto.randomUUID(),
+            id: createId(),
             fileName: audioFiles[0]?.relativePath || 'jam_1.mp3',
             delayBeforeMs: 0,
             volume: 100
@@ -616,7 +617,7 @@ export function ProfileEditorModal({
                                       steps: [
                                         ...s.steps,
                                         {
-                                          id: crypto.randomUUID(),
+                                          id: createId(),
                                           fileName: audioFiles[0]?.relativePath || '',
                                           delayBeforeMs: 1500,
                                           volume: 100

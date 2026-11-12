@@ -1,6 +1,12 @@
 import { useState } from 'react';
 import { Play, Plus, Power, RotateCcw, Square, Trash2, Volume2 } from 'lucide-react';
-import type { AudioFileEntry, AudioStep, DeviceStatus, ShutdownAction } from '@jadwal-adb/shared';
+import {
+  createId,
+  type AudioFileEntry,
+  type AudioStep,
+  type DeviceStatus,
+  type ShutdownAction
+} from '@jadwal-adb/shared';
 
 interface RemoteControlPanelProps {
   status: DeviceStatus;
@@ -20,7 +26,7 @@ export function RemoteControlPanel({
   const [label, setLabel] = useState('Bel Manual / Pengumuman');
   const [steps, setSteps] = useState<AudioStep[]>([
     {
-      id: crypto.randomUUID(),
+      id: createId(),
       fileName: audioFiles[0]?.relativePath || '',
       delayBeforeMs: 0,
       volume: 100
@@ -37,7 +43,7 @@ export function RemoteControlPanel({
     setSteps((prev) => [
       ...prev,
       {
-        id: crypto.randomUUID(),
+        id: createId(),
         fileName: audioFiles[0]?.relativePath || '',
         delayBeforeMs: 1500,
         volume: 100

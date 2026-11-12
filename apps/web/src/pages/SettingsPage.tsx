@@ -16,6 +16,27 @@ interface SettingsPageProps {
   onNotify: (message: string) => void;
 }
 
+async function copyTextSafe(text: string): Promise<boolean> {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fallback below for non-HTTPS contexts
+    }
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  const ok = document.execCommand('copy');
+  document.body.removeChild(textarea);
+  return ok;
+}
+
 export function SettingsPage({
   currentUser,
   shutdownSettings,
@@ -283,9 +304,9 @@ export function SettingsPage({
                   />
                   <button
                     type="button"
-                    onClick={() => {
-                      void navigator.clipboard.writeText(window.location.origin);
-                      onNotify('URL Server disalin');
+                    onClick={async () => {
+                      const ok = await copyTextSafe(window.location.origin);
+                      onNotify(ok ? 'URL Server disalin' : 'Gagal menyalin, salin manual dari kotak teks');
                     }}
                     className="inline-flex items-center gap-1 rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold hover:bg-slate-50"
                   >
@@ -308,9 +329,9 @@ export function SettingsPage({
                   />
                   <button
                     type="button"
-                    onClick={() => {
-                      void navigator.clipboard.writeText(deviceToken);
-                      onNotify('Device Token disalin');
+                    onClick={async () => {
+                      const ok = await copyTextSafe(deviceToken);
+                      onNotify(ok ? 'Device Token disalin' : 'Gagal menyalin, salin manual dari kotak teks');
                     }}
                     className="inline-flex items-center gap-1 rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold hover:bg-slate-50"
                   >
