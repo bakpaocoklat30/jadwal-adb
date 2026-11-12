@@ -65,9 +65,9 @@ main() {
   fi
 
   local branch
-  branch="$(git rev-parse --abbrev-ref HEAD)"
+  branch="$(git -c safe.directory="$SCRIPT_DIR" rev-parse --abbrev-ref HEAD)"
   echo "==> Menarik pembaruan terbaru dari GitHub (branch: ${branch})..."
-  git pull --ff-only origin "$branch"
+  git -c safe.directory="$SCRIPT_DIR" pull --ff-only origin "$branch"
 
   echo "==> Membangun ulang dan menjalankan container Docker..."
   "${compose_cmd[@]}" up -d --build --remove-orphans
