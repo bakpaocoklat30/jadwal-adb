@@ -559,8 +559,19 @@ function recordAndFlushLog(log: BellLogInput): void {
 async function dispatchPlayJob(job: Omit<AudioPlayJob, 'jobId'>): Promise<void> {
   if (!mainWindow || mainWindow.isDestroyed()) return;
 
+  const fullJob: AudioPlayJob = {
+    ...job,
+    jobId: crypto.randomUUID()
+  };
+  activeJobId = fullJob.jobId;
+  isPlaying = true;
+  currentPlayingLabel = fullJob.slotLabel;
+  emitUIState();
+  sendHeartbeat();
+
   // Ensure any web-uploaded (_web/...) files are downloaded locally before playing
   for (const step of job.steps) {
+    if (activeJobId !== fullJob.jobId) return;
     if (step.fileName.startsWith('_web/') && store.config.serverUrl && store.config.deviceToken) {
       const safeName = path.basename(step.fileName);
       const localPath = path.join(store.config.audioDir, '_web', safeName);
@@ -575,19 +586,19 @@ async function dispatchPlayJob(job: Omit<AudioPlayJob, 'jobId'>): Promise<void> 
     }
   }
 
-  const fullJob: AudioPlayJob = {
-    ...job,
-    jobId: crypto.randomUUID()
-  };
-  activeJobId = fullJob.jobId;
-  isPlaying = true;
-  currentPlayingLabel = fullJob.slotLabel;
-  emitUIState();
-  sendHeartbeat();
+  if (activeJobId !== fullJob.jobId || !mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
   mainWindow.webContents.send('audio:play', fullJob);
 }
 
 function stopPlayback(): void {
+  activeJobId = null;
+  isPlaying = false;
+  currentPlayingLabel = null;
+  emitUIState();
+  sendHeartbeat();
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('audio:stop');
   }

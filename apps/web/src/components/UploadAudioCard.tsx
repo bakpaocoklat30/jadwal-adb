@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Play, Upload } from 'lucide-react';
+import { Play, Square, Upload } from 'lucide-react';
 import {
   createId,
   type AudioStep,
@@ -11,12 +11,14 @@ interface UploadAudioCardProps {
   status: DeviceStatus;
   onUploadAudio: (file: File) => Promise<ServerAudioFile>;
   onPlayManual: (label: string, steps: AudioStep[]) => Promise<void>;
+  onStopAudio: () => Promise<void>;
 }
 
 export function UploadAudioCard({
   status,
   onUploadAudio,
-  onPlayManual
+  onPlayManual,
+  onStopAudio
 }: UploadAudioCardProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -105,6 +107,21 @@ export function UploadAudioCard({
           >
             <Upload className="h-3.5 w-3.5" />
             Simpan Saja
+          </button>
+
+          <button
+            type="button"
+            disabled={!status.online}
+            onClick={() => void onStopAudio()}
+            className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-3.5 py-2.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+              status.isPlaying
+                ? 'bg-rose-600 text-white hover:bg-rose-700'
+                : 'border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
+            }`}
+            title="Matikan audio yang sedang berbunyi di PC Bel"
+          >
+            <Square className="h-3.5 w-3.5 fill-current" />
+            OFF
           </button>
         </div>
       </div>

@@ -88,26 +88,30 @@ export function StatusBanner({
 
           <div className="flex flex-wrap items-center gap-2">
             {status.online && (
-              <button
-                type="button"
-                onClick={onSyncNow}
-                disabled={busy}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-              >
-                <RefreshCw className="h-3.5 w-3.5" />
-                Sinkronkan
-              </button>
-            )}
-            {status.isPlaying && (
-              <button
-                type="button"
-                onClick={onStopAudio}
-                disabled={busy}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
-              >
-                <Square className="h-3.5 w-3.5 fill-current" />
-                Stop Audio
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={onSyncNow}
+                  disabled={busy}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  Sinkronkan
+                </button>
+                <button
+                  type="button"
+                  onClick={onStopAudio}
+                  disabled={busy}
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition disabled:opacity-50 ${
+                    status.isPlaying
+                      ? 'bg-rose-600 text-white shadow-xs hover:bg-rose-700'
+                      : 'border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
+                  }`}
+                >
+                  <Square className="h-3.5 w-3.5 fill-current" />
+                  {status.isPlaying ? 'OFF / Stop Audio' : 'OFF Audio'}
+                </button>
+              </>
             )}
           </div>
         </div>

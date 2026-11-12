@@ -6,7 +6,9 @@ import {
   Headphones,
   Play,
   Search,
-  Trash2
+  Square,
+  Trash2,
+  X
 } from 'lucide-react';
 import {
   createId,
@@ -29,6 +31,7 @@ interface AudioFilesPageProps {
   onUploadAudio: (file: File) => Promise<ServerAudioFile>;
   onDeleteServerAudio: (fileName: string) => Promise<void>;
   onPlayManual: (label: string, steps: AudioStep[]) => Promise<void>;
+  onStopAudio: () => Promise<void>;
 }
 
 export function AudioFilesPage({
@@ -39,7 +42,8 @@ export function AudioFilesPage({
   snapshot,
   onUploadAudio,
   onDeleteServerAudio,
-  onPlayManual
+  onPlayManual,
+  onStopAudio
 }: AudioFilesPageProps) {
   const [query, setQuery] = useState('');
   const [previewAudio, setPreviewAudio] = useState<{
@@ -131,6 +135,7 @@ export function AudioFilesPage({
             status={status}
             onUploadAudio={onUploadAudio}
             onPlayManual={onPlayManual}
+            onStopAudio={onStopAudio}
           />
         </div>
 
@@ -146,6 +151,19 @@ export function AudioFilesPage({
                 PC Bel Windows agar tetap bisa dipakai walau offline.
               </p>
             </div>
+            <button
+              type="button"
+              disabled={!status.online}
+              onClick={() => void onStopAudio()}
+              className={`inline-flex shrink-0 items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                status.isPlaying
+                  ? 'bg-rose-600 text-white hover:bg-rose-700'
+                  : 'border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
+              }`}
+            >
+              <Square className="h-3.5 w-3.5 fill-current" />
+              {status.isPlaying ? 'OFF / Stop Audio PC Bel' : 'OFF Audio PC Bel'}
+            </button>
           </div>
 
           {previewAudio && (
@@ -153,7 +171,17 @@ export function AudioFilesPage({
               <span className="text-xs font-semibold text-indigo-950">
                 Pratinjau Browser: {previewAudio.fileName}
               </span>
-              <audio controls autoPlay src={previewAudio.objectUrl} className="h-8 max-w-full" />
+              <div className="flex flex-wrap items-center gap-2">
+                <audio controls autoPlay src={previewAudio.objectUrl} className="h-8 max-w-full" />
+                <button
+                  type="button"
+                  onClick={() => setPreviewAudio(null)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  OFF Pratinjau
+                </button>
+              </div>
             </div>
           )}
 

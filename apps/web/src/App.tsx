@@ -328,6 +328,11 @@ export function App() {
               await api.playManual(label, steps);
             }, 'Memutar audio di PC Bel...')
           }
+          onStopAudio={() =>
+            runAction(async () => {
+              await api.stopAudio();
+            }, 'Perintah hentikan audio dikirim')
+          }
         />
       )}
 

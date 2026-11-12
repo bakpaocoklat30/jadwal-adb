@@ -199,15 +199,31 @@ export function RemoteControlPanel({
             </datalist>
           </div>
 
-          <button
-            type="button"
-            onClick={handlePlay}
-            disabled={!status.online || submitting || (!selectedFirst && steps.every((s) => !s.fileName))}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-          >
-            <Play className="h-4 w-4 fill-current" />
-            {status.online ? 'Bunyikan Sekarang di PC Bel' : 'PC Bel Sedang Offline'}
-          </button>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <button
+              type="button"
+              onClick={handlePlay}
+              disabled={!status.online || submitting || (!selectedFirst && steps.every((s) => !s.fileName))}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              <Play className="h-4 w-4 fill-current" />
+              {status.online ? 'Bunyikan Sekarang di PC Bel' : 'PC Bel Sedang Offline'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void onStopAudio()}
+              disabled={!status.online}
+              className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                status.isPlaying
+                  ? 'bg-rose-600 text-white hover:bg-rose-700'
+                  : 'border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
+              }`}
+              title="Matikan audio di PC Bel"
+            >
+              <Square className="h-4 w-4 fill-current" />
+              OFF Audio
+            </button>
+          </div>
         </div>
       </div>
 
@@ -215,6 +231,7 @@ export function RemoteControlPanel({
         status={status}
         onUploadAudio={onUploadAudio}
         onPlayManual={onPlayManual}
+        onStopAudio={onStopAudio}
       />
 
       {/* Remote Power Control */}
