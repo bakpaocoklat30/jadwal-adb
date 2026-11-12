@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,6 +17,23 @@ interface PersistedRuntimeState {
   hasLocalUnsyncedChanges: boolean;
   localBaseVersion: number | null;
   localModifiedAt: string | null;
+  lockPinHash: string;
+  lockPinIsDefault: boolean;
+}
+
+export function hashLockPin(pin: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(pin, salt, 64).toString('hex');
+  return `${salt}:${derived}`;
+}
+
+export function verifyLockPinHash(pin: string, storedHash: string): boolean {
+  const [salt, keyHex] = storedHash.split(':');
+  if (!salt || !keyHex) return false;
+  const derived = crypto.scryptSync(pin, salt, 64);
+  const expected = Buffer.from(keyHex, 'hex');
+  if (derived.length !== expected.length) return false;
+  return crypto.timingSafeEqual(derived, expected);
 }
 
 function writeJsonAtomic(filePath: string, data: unknown): void {
@@ -58,7 +76,10 @@ export class DesktopStore {
       autoLaunch: true,
       keepAwake: true,
       useServerTimeOffset: true,
-      dryRunShutdown: process.platform !== 'win32'
+      dryRunShutdown: process.platform !== 'win32',
+      lockEnabled: true,
+      lockOnHide: true,
+      lockTimeoutMinutes: 5
     };
 
     const loadedConfig = readJsonSafe<Partial<DesktopConfig>>(this.configPath);
@@ -74,6 +95,7 @@ export class DesktopStore {
       ? { ...loadedSnap, shutdownSettings: normalizeShutdownSettings(loadedSnap.shutdownSettings) }
       : null;
     const loadedState = readJsonSafe<Partial<PersistedRuntimeState>>(this.statePath);
+    const hasPin = typeof loadedState?.lockPinHash === 'string' && loadedState.lockPinHash.includes(':');
     this.state = {
       playedKeys: loadedState?.playedKeys ?? [],
       shutdownTriggeredDates: loadedState?.shutdownTriggeredDates ?? [],
@@ -81,8 +103,23 @@ export class DesktopStore {
       recentLogs: loadedState?.recentLogs ?? [],
       hasLocalUnsyncedChanges: loadedState?.hasLocalUnsyncedChanges ?? false,
       localBaseVersion: loadedState?.localBaseVersion ?? null,
-      localModifiedAt: loadedState?.localModifiedAt ?? null
+      localModifiedAt: loadedState?.localModifiedAt ?? null,
+      lockPinHash: hasPin ? loadedState!.lockPinHash! : hashLockPin('123456'),
+      lockPinIsDefault: hasPin ? (loadedState?.lockPinIsDefault ?? false) : true
     };
+    if (!hasPin) {
+      this.saveState();
+    }
+  }
+
+  public verifyLockPin(pin: string): boolean {
+    return verifyLockPinHash(pin, this.state.lockPinHash);
+  }
+
+  public setLockPin(newPin: string): void {
+    this.state.lockPinHash = hashLockPin(newPin);
+    this.state.lockPinIsDefault = false;
+    this.saveState();
   }
 
   public updateConfig(patch: Partial<DesktopConfig>): DesktopConfig {

@@ -87,8 +87,67 @@ let shutdownActor: string | null = null;
 let shutdownTimer: NodeJS.Timeout | null = null;
 let waitingAudioTimer: NodeJS.Timeout | null = null;
 
+// App Lock state
+let isAppLocked = true;
+let lastUnlockedActivityMs = Date.now();
+let failedPinAttempts = 0;
+let lockCooldownUntilMs = 0;
+
+function lockApp(): void {
+  if (!store.config.lockEnabled) return;
+  if (!isAppLocked) {
+    isAppLocked = true;
+    emitUIState();
+  }
+}
+
+function assertUnlocked(): void {
+  if (isAppLocked) {
+    throw new Error('Aplikasi sedang terkunci. Masukkan PIN terlebih dahulu.');
+  }
+  lastUnlockedActivityMs = Date.now();
+}
+
 function buildUIState(): DesktopUIState {
+  const cooldownSec = Math.max(0, Math.ceil((lockCooldownUntilMs - Date.now()) / 1000));
+  if (isAppLocked) {
+    return {
+      locked: true,
+      lockPinIsDefault: store.state.lockPinIsDefault,
+      lockCooldownSec: cooldownSec,
+      config: {
+        ...store.config,
+        serverUrl: '',
+        deviceToken: '',
+        audioDir: ''
+      },
+      appVersion: app.getVersion(),
+      platform: process.platform,
+      connectedToServer,
+      lastError: null,
+      lastSyncAt,
+      clockOffsetMs,
+      snapshot: null,
+      hasLocalUnsyncedChanges: store.state.hasLocalUnsyncedChanges,
+      localBaseVersion: null,
+      localModifiedAt: null,
+      conflictingServerSnapshot: null,
+      audioFiles: [],
+      pendingLogCount: store.state.pendingLogs.length,
+      recentLogs: [],
+      isPlaying,
+      currentPlayingLabel,
+      shutdownState,
+      shutdownAction,
+      shutdownRemainingSec,
+      shutdownReason
+    };
+  }
+
   return {
+    locked: false,
+    lockPinIsDefault: store.state.lockPinIsDefault,
+    lockCooldownSec: cooldownSec,
     config: store.config,
     appVersion: app.getVersion(),
     platform: process.platform,
@@ -951,9 +1010,20 @@ function createWindow(): void {
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
       event.preventDefault();
+      if (store.config.lockEnabled && store.config.lockOnHide) {
+        lockApp();
+      }
       mainWindow?.hide();
     }
   });
+}
+
+function showAndFocusWindow(): void {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }
 }
 
 function createTray(): void {
@@ -969,8 +1039,15 @@ function createTray(): void {
       {
         label: 'Buka Jendela Bel Sekolah ADB',
         click: () => {
-          mainWindow?.show();
-          mainWindow?.focus();
+          showAndFocusWindow();
+        }
+      },
+      {
+        label: 'Kunci Aplikasi Sekarang',
+        click: () => {
+          if (store.config.lockEnabled) {
+            lockApp();
+          }
         }
       },
       {
@@ -982,12 +1059,22 @@ function createTray(): void {
       },
       {
         label: 'Hentikan Audio',
-        click: () => stopPlayback()
+        click: () => {
+          if (isAppLocked) {
+            showAndFocusWindow();
+            return;
+          }
+          stopPlayback();
+        }
       },
       { type: 'separator' },
       {
         label: 'Keluar Aplikasi',
         click: () => {
+          if (isAppLocked) {
+            showAndFocusWindow();
+            return;
+          }
           isQuitting = true;
           app.quit();
         }
@@ -996,20 +1083,102 @@ function createTray(): void {
   );
 
   tray.on('double-click', () => {
-    mainWindow?.show();
-    mainWindow?.focus();
+    showAndFocusWindow();
   });
 }
 
 function registerIpc(): void {
   ipcMain.handle('desktop:get-state', () => buildUIState());
 
+  ipcMain.on('desktop:touch-activity', () => {
+    if (!isAppLocked) {
+      lastUnlockedActivityMs = Date.now();
+    }
+  });
+
+  ipcMain.handle('desktop:unlock', (_ev, rawPin: string) => {
+    const now = Date.now();
+    if (lockCooldownUntilMs > now) {
+      const sec = Math.ceil((lockCooldownUntilMs - now) / 1000);
+      return {
+        ok: false,
+        error: `Terlalu banyak percobaan salah. Tunggu ${sec} detik.`,
+        state: buildUIState()
+      };
+    }
+
+    const pin = typeof rawPin === 'string' ? rawPin.trim() : '';
+    if (!store.verifyLockPin(pin)) {
+      failedPinAttempts += 1;
+      if (failedPinAttempts >= 5) {
+        lockCooldownUntilMs = Date.now() + 15_000;
+        failedPinAttempts = 0;
+        emitUIState();
+        return {
+          ok: false,
+          error: 'Terlalu banyak percobaan salah. Tunggu 15 detik.',
+          state: buildUIState()
+        };
+      }
+      return {
+        ok: false,
+        error: `PIN atau password salah (${5 - failedPinAttempts} kesempatan tersisa).`,
+        state: buildUIState()
+      };
+    }
+
+    failedPinAttempts = 0;
+    lockCooldownUntilMs = 0;
+    isAppLocked = false;
+    lastUnlockedActivityMs = Date.now();
+    emitUIState();
+    return { ok: true, state: buildUIState() };
+  });
+
+  ipcMain.handle('desktop:lock-now', () => {
+    if (store.config.lockEnabled) {
+      isAppLocked = true;
+      emitUIState();
+    }
+    return buildUIState();
+  });
+
+  ipcMain.handle(
+    'desktop:change-lock-pin',
+    (_ev, payload: { currentPin: string; newPin: string }) => {
+      assertUnlocked();
+      const cur = (payload.currentPin || '').trim();
+      const next = (payload.newPin || '').trim();
+      if (!store.verifyLockPin(cur)) {
+        return {
+          ok: false,
+          error: 'PIN / password saat ini salah.',
+          state: buildUIState()
+        };
+      }
+      if (next.length < 4) {
+        return {
+          ok: false,
+          error: 'PIN / password baru minimal 4 karakter.',
+          state: buildUIState()
+        };
+      }
+      store.setLockPin(next);
+      emitUIState();
+      return { ok: true, state: buildUIState() };
+    }
+  );
+
   ipcMain.handle('desktop:save-config', async (_ev, patch: Partial<DesktopConfig>) => {
+    assertUnlocked();
     const prevServer = store.config.serverUrl;
     const prevToken = store.config.deviceToken;
     const prevAudioDir = store.config.audioDir;
 
     store.updateConfig(patch);
+    if (!store.config.lockEnabled) {
+      isAppLocked = false;
+    }
     updatePowerSaveBlocker();
     updateAutoLaunch();
 
@@ -1028,6 +1197,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('desktop:pick-audio-dir', async () => {
+    assertUnlocked();
     if (!mainWindow) return null;
     const res = await dialog.showOpenDialog(mainWindow, {
       title: 'Pilih Folder File MP3 Bel Sekolah',
@@ -1044,23 +1214,27 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('desktop:open-audio-dir', async () => {
+    assertUnlocked();
     if (store.config.audioDir) {
       await shell.openPath(store.config.audioDir);
     }
   });
 
   ipcMain.handle('desktop:rescan-audio', () => {
+    assertUnlocked();
     refreshAudioFiles();
     return buildUIState();
   });
 
   ipcMain.handle('desktop:sync-now', async () => {
+    assertUnlocked();
     refreshAudioFiles();
     await syncWithServerRest();
     return buildUIState();
   });
 
   ipcMain.handle('desktop:init-local-snapshot', () => {
+    assertUnlocked();
     if (!store.snapshot) {
       store.saveLocalModifiedSnapshot(createStarterSnapshot());
       emitUIState();
@@ -1069,6 +1243,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('desktop:save-local-snapshot', async (_ev, incoming: ScheduleSnapshot) => {
+    assertUnlocked();
     const normalized: ScheduleSnapshot = {
       ...incoming,
       profiles: incoming.profiles.map((p) => ({
@@ -1089,6 +1264,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('desktop:push-local-snapshot', async (_ev, force: boolean) => {
+    assertUnlocked();
     const result = await pushLocalSnapshotToServer(Boolean(force));
     return {
       state: buildUIState(),
@@ -1097,6 +1273,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('desktop:accept-server-snapshot', async () => {
+    assertUnlocked();
     if (conflictingServerSnapshot) {
       const next = conflictingServerSnapshot;
       conflictingServerSnapshot = null;
@@ -1113,6 +1290,7 @@ function registerIpc(): void {
   ipcMain.handle(
     'desktop:play-test',
     (_ev, payload: { label: string; steps: AudioStep[] }) => {
+      assertUnlocked();
       void dispatchPlayJob({
         triggerType: 'manual',
         profileName: null,
@@ -1125,12 +1303,14 @@ function registerIpc(): void {
   );
 
   ipcMain.handle('desktop:stop-audio', () => {
+    assertUnlocked();
     stopPlayback();
   });
 
   ipcMain.handle(
     'desktop:trigger-shutdown',
     (_ev, payload: { action: ShutdownAction; graceSeconds: number; reason: string }) => {
+      assertUnlocked();
       initiateShutdown(
         payload.action,
         payload.graceSeconds,
@@ -1190,6 +1370,7 @@ if (!gotSingleLock) {
   app.whenReady().then(() => {
     const defaultAudioDir = path.join(app.getPath('documents'), 'BelSekolahADB-Audio');
     store = new DesktopStore(app.getPath('userData'), defaultAudioDir);
+    isAppLocked = Boolean(store.config.lockEnabled);
 
     registerAudioProtocol();
     registerIpc();
@@ -1205,6 +1386,16 @@ if (!gotSingleLock) {
 
     setInterval(runSchedulerTick, 1000);
     setInterval(sendHeartbeat, 20000);
+    setInterval(() => {
+      if (
+        store.config.lockEnabled &&
+        !isAppLocked &&
+        store.config.lockTimeoutMinutes > 0 &&
+        Date.now() - lastUnlockedActivityMs >= store.config.lockTimeoutMinutes * 60_000
+      ) {
+        lockApp();
+      }
+    }, 10000);
     setInterval(() => {
       refreshAudioFiles();
     }, 30000);

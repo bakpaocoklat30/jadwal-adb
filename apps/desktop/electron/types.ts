@@ -18,9 +18,15 @@ export interface DesktopConfig {
   keepAwake: boolean;
   useServerTimeOffset: boolean;
   dryRunShutdown: boolean;
+  lockEnabled: boolean;
+  lockOnHide: boolean;
+  lockTimeoutMinutes: number;
 }
 
 export interface DesktopUIState {
+  locked: boolean;
+  lockPinIsDefault: boolean;
+  lockCooldownSec: number;
   config: DesktopConfig;
   appVersion: string;
   platform: string;

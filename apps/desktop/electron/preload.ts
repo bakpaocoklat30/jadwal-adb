@@ -14,8 +14,18 @@ export interface SnapshotSaveResult {
   message: string;
 }
 
+export interface PinActionResult {
+  ok: boolean;
+  error?: string;
+  state: DesktopUIState;
+}
+
 export interface DesktopBridge {
   getState: () => Promise<DesktopUIState>;
+  unlock: (pin: string) => Promise<PinActionResult>;
+  lockNow: () => Promise<DesktopUIState>;
+  changeLockPin: (currentPin: string, newPin: string) => Promise<PinActionResult>;
+  touchActivity: () => void;
   saveConfig: (patch: Partial<DesktopConfig>) => Promise<DesktopUIState>;
   pickAudioDir: () => Promise<string | null>;
   openAudioDir: () => Promise<void>;
@@ -38,6 +48,11 @@ export interface DesktopBridge {
 
 const bridge: DesktopBridge = {
   getState: () => ipcRenderer.invoke('desktop:get-state'),
+  unlock: (pin) => ipcRenderer.invoke('desktop:unlock', pin),
+  lockNow: () => ipcRenderer.invoke('desktop:lock-now'),
+  changeLockPin: (currentPin, newPin) =>
+    ipcRenderer.invoke('desktop:change-lock-pin', { currentPin, newPin }),
+  touchActivity: () => ipcRenderer.send('desktop:touch-activity'),
   saveConfig: (patch) => ipcRenderer.invoke('desktop:save-config', patch),
   pickAudioDir: () => ipcRenderer.invoke('desktop:pick-audio-dir'),
   openAudioDir: () => ipcRenderer.invoke('desktop:open-audio-dir'),
