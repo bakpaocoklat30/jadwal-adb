@@ -16,7 +16,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import id.sch.smkn1adw.beladb.data.ScheduleResolver
 import id.sch.smkn1adw.beladb.ui.MainViewModel
@@ -28,8 +30,9 @@ private enum class AppTab(val label: String, val icon: ImageVector) {
     DASHBOARD("Beranda", Icons.Default.Home),
     PROFILES("Jadwal", Icons.Default.AccessTime),
     CALENDAR("Kalender", Icons.Default.DateRange),
+    ANNOUNCE("Siaran", Icons.Default.Mic),
     AUDIO("Audio", Icons.Default.MusicNote),
-    SETTINGS("Pengaturan", Icons.Default.Settings)
+    SETTINGS("Setelan", Icons.Default.Settings)
 }
 
 class MainActivity : ComponentActivity() {
@@ -162,7 +165,15 @@ private fun BelSekolahRootApp(vm: MainViewModel = viewModel()) {
                         selected = currentTab == tab,
                         onClick = { currentTab = tab },
                         icon = { Icon(tab.icon, contentDescription = tab.label) },
-                        label = { Text(tab.label) }
+                        label = {
+                            Text(
+                                text = tab.label,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     )
                 }
             }
@@ -217,6 +228,22 @@ private fun BelSekolahRootApp(vm: MainViewModel = viewModel()) {
                         vm.createOverride(start, end, profileId, note)
                     },
                     onDeleteOverride = { id -> vm.removeOverride(id) }
+                )
+
+                AppTab.ANNOUNCE -> AnnounceScreen(
+                    state = state,
+                    onPlayChimeOnly = { vm.playChimeOnly() },
+                    onStopBellAudio = { vm.stopBellAudio() },
+                    onStartVoiceRecord = { vm.startVoiceNoteRecording() },
+                    onStopVoiceRecord = { vm.stopVoiceNoteRecording(keepFile = true) },
+                    onDiscardVoiceRecord = { vm.discardVoiceNoteRecording() },
+                    onPreviewVoiceRecord = { withChime -> vm.previewVoiceNote(withChime) },
+                    onStopVoicePreview = { vm.stopVoiceNotePreview() },
+                    onSendVoiceNoteToBell = { withChime, label ->
+                        vm.sendVoiceNoteToBell(withChime, label)
+                    },
+                    onStartLiveMic = { withChime -> vm.startLiveMic(withChime) },
+                    onStopLiveMic = { vm.stopLiveMic() }
                 )
 
                 AppTab.AUDIO -> AudioScreen(

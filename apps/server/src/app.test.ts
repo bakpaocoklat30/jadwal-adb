@@ -532,3 +532,121 @@ test('manual DB backup, auto-backup settings, download, delete, and JSON schedul
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('announcement chime, voice note upload, and realtime live mic Socket.IO relay work', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jadwal-adb-test-'));
+  const { app } = await buildServerApp(testConfig(tmpDir));
+  const address = await app.listen({ port: 0, host: '127.0.0.1' });
+
+  try {
+    const wakaLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'waka', password: 'waka123' }
+    });
+    const wakaToken = wakaLogin.json().token as string;
+
+    const deviceSocket = ioClient(address, {
+      auth: { kind: 'device', deviceToken: 'test-device-token' },
+      transports: ['websocket']
+    });
+    await new Promise<void>((resolve, reject) => {
+      deviceSocket.on('connect', () => resolve());
+      deviceSocket.on('connect_error', reject);
+    });
+
+    // 1. Standalone chime command
+    const chimeCmdPromise = new Promise<{ type: string; requestedBy: string }>((resolve) => {
+      deviceSocket.once('device:command', resolve);
+    });
+    const chimeRes = await fetch(`${address}/api/remote/play-chime`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${wakaToken}` }
+    });
+    assert.equal(chimeRes.status, 200);
+    const chimeCmd = await chimeCmdPromise;
+    assert.equal(chimeCmd.type, 'play_chime');
+    assert.equal(chimeCmd.requestedBy, 'Waka Kurikulum');
+
+    // 2. Voice note upload + device download
+    const vnCmdPromise = new Promise<{
+      type: string;
+      fileName: string;
+      withChime: boolean;
+      label: string;
+    }>((resolve) => {
+      deviceSocket.once('device:command', resolve);
+    });
+    const form = new FormData();
+    form.append('file', new Blob([Buffer.from('fake-m4a-voice-note')], { type: 'audio/mp4' }), 'vn.m4a');
+    const vnRes = await fetch(
+      `${address}/api/remote/announce-voice-note?withChime=true&label=Info+Upacara`,
+      {
+        method: 'POST',
+        headers: { authorization: `Bearer ${wakaToken}` },
+        body: form
+      }
+    );
+    assert.equal(vnRes.status, 200);
+    const vnCmd = await vnCmdPromise;
+    assert.equal(vnCmd.type, 'play_announcement');
+    assert.equal(vnCmd.withChime, true);
+    assert.equal(vnCmd.label, 'Info Upacara');
+
+    const dlRes = await app.inject({
+      method: 'GET',
+      url: `/api/device/announcements/${encodeURIComponent(vnCmd.fileName)}`,
+      headers: { 'x-device-token': 'test-device-token' }
+    });
+    assert.equal(dlRes.statusCode, 200);
+    assert.equal(dlRes.body, 'fake-m4a-voice-note');
+
+    // 3. Live Mic Socket.IO relay
+    const userSocket = ioClient(address, {
+      auth: { kind: 'user', token: wakaToken },
+      transports: ['websocket']
+    });
+    await new Promise<void>((resolve, reject) => {
+      userSocket.on('connect', () => resolve());
+      userSocket.on('connect_error', reject);
+    });
+
+    const liveStartPromise = new Promise<{ sessionId: string; withChime: boolean }>((resolve) => {
+      deviceSocket.once('device:live_mic_start', resolve);
+    });
+    const liveChunkPromise = new Promise<{ sessionId: string; pcmBase64: string }>((resolve) => {
+      deviceSocket.once('device:live_mic_chunk', resolve);
+    });
+    const liveStopPromise = new Promise<{ sessionId: string }>((resolve) => {
+      deviceSocket.once('device:live_mic_stop', resolve);
+    });
+
+    const ack = await new Promise<{ ok: boolean; sessionId?: string }>((resolve) => {
+      userSocket.emit('announce:live_start', { withChime: true, sampleRate: 16000 }, resolve);
+    });
+    assert.equal(ack.ok, true);
+    assert.ok(ack.sessionId);
+
+    const started = await liveStartPromise;
+    assert.equal(started.sessionId, ack.sessionId);
+    assert.equal(started.withChime, true);
+
+    userSocket.emit('announce:live_chunk', {
+      sessionId: ack.sessionId,
+      pcmBase64: Buffer.from([1, 2, 3, 4]).toString('base64'),
+      sampleRate: 16000
+    });
+    const chunk = await liveChunkPromise;
+    assert.equal(chunk.sessionId, ack.sessionId);
+
+    userSocket.emit('announce:live_stop', { sessionId: ack.sessionId });
+    const stopped = await liveStopPromise;
+    assert.equal(stopped.sessionId, ack.sessionId);
+
+    userSocket.disconnect();
+    deviceSocket.disconnect();
+  } finally {
+    await app.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

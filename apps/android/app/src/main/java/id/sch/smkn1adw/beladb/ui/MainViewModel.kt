@@ -1,9 +1,17 @@
 package id.sch.smkn1adw.beladb.ui
 
+import android.annotation.SuppressLint
 import android.app.Application
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaPlayer
+import android.media.MediaRecorder
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
+import android.util.Base64
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -11,9 +19,15 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import id.sch.smkn1adw.beladb.data.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.PI
+import kotlin.math.exp
+import kotlin.math.sin
 
 data class MainUiState(
     val initializing: Boolean = true,
@@ -32,6 +46,12 @@ data class MainUiState(
     val backupSettings: BackupSettings? = null,
     val backupFiles: List<BackupFileInfo> = emptyList(),
     val previewingFileName: String? = null,
+    val isRecordingVoiceNote: Boolean = false,
+    val voiceNoteDurationSec: Int = 0,
+    val hasRecordedVoiceNote: Boolean = false,
+    val isPreviewingVoiceNote: Boolean = false,
+    val isLiveMicActive: Boolean = false,
+    val liveMicDurationSec: Int = 0,
     val loginError: String? = null
 )
 
@@ -40,6 +60,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val api = ApiClient(prefs)
     private val socketClient = SocketClient(api.json)
     private var mediaPlayer: MediaPlayer? = null
+
+    private var voiceRecorder: MediaRecorder? = null
+    private var voiceRecordTimerJob: Job? = null
+    private var voicePreviewJob: Job? = null
+    private var chimeTrack: AudioTrack? = null
+
+    private var liveMicSessionId: String? = null
+    private var liveMicStreamJob: Job? = null
+    private var liveMicTimerJob: Job? = null
+    private var liveAudioRecord: AudioRecord? = null
 
     var uiState by mutableStateOf(MainUiState(serverUrl = prefs.serverUrl))
         private set
@@ -117,6 +147,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun logout() {
+        stopLiveMic()
+        stopVoiceNoteRecording(keepFile = false)
         stopPhoneAudio()
         socketClient.disconnect()
         prefs.authToken = null
@@ -569,8 +601,301 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        stopLiveMic()
+        stopVoiceNoteRecording(keepFile = false)
         stopPhoneAudio()
         socketClient.disconnect()
         super.onCleared()
+    }
+
+    // --- Pengumuman: Ting-Tong, Mode 1 Voice Note + Preview, Mode 2 Live Mic ---
+    private fun voiceNoteDraftFile(): File =
+        File(getApplication<Application>().cacheDir, "voice_note_draft.m4a")
+
+    fun playChimeOnly() {
+        runMutation("Nada Ting-Tong dibunyikan di PC Bel") {
+            api.playChime()
+        }
+    }
+
+    fun startVoiceNoteRecording() {
+        stopPhoneAudio()
+        stopLiveMic()
+        stopVoiceNoteRecording(keepFile = false)
+
+        val ctx = getApplication<Application>()
+        val draftFile = voiceNoteDraftFile()
+        runCatching { draftFile.delete() }
+
+        try {
+            val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                MediaRecorder(ctx)
+            } else {
+                @Suppress("DEPRECATION")
+                MediaRecorder()
+            }
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioSamplingRate(44100)
+            recorder.setAudioEncodingBitRate(96000)
+            recorder.setOutputFile(draftFile.absolutePath)
+            recorder.prepare()
+            recorder.start()
+            voiceRecorder = recorder
+
+            uiState = uiState.copy(
+                isRecordingVoiceNote = true,
+                voiceNoteDurationSec = 0,
+                hasRecordedVoiceNote = false
+            )
+            voiceRecordTimerJob?.cancel()
+            voiceRecordTimerJob = viewModelScope.launch {
+                while (isActive) {
+                    delay(1000)
+                    uiState = uiState.copy(voiceNoteDurationSec = uiState.voiceNoteDurationSec + 1)
+                }
+            }
+        } catch (err: Exception) {
+            stopVoiceNoteRecording(keepFile = false)
+            showMessage(err.message ?: "Gagal memulai perekaman suara")
+        }
+    }
+
+    fun stopVoiceNoteRecording(keepFile: Boolean = true) {
+        voiceRecordTimerJob?.cancel()
+        voiceRecordTimerJob = null
+        val rec = voiceRecorder
+        voiceRecorder = null
+        if (rec != null) {
+            runCatching { rec.stop() }
+            runCatching { rec.release() }
+        }
+        val fileExists = keepFile && voiceNoteDraftFile().let { it.exists() && it.length() > 0 }
+        uiState = uiState.copy(
+            isRecordingVoiceNote = false,
+            hasRecordedVoiceNote = fileExists
+        )
+    }
+
+    fun discardVoiceNoteRecording() {
+        stopVoiceNotePreview()
+        stopVoiceNoteRecording(keepFile = false)
+        runCatching { voiceNoteDraftFile().delete() }
+        uiState = uiState.copy(hasRecordedVoiceNote = false, voiceNoteDurationSec = 0)
+    }
+
+    fun previewVoiceNote(withChime: Boolean) {
+        val draftFile = voiceNoteDraftFile()
+        if (!draftFile.exists() || draftFile.length() == 0L) {
+            showMessage("Rekaman belum tersedia")
+            return
+        }
+        stopPhoneAudio()
+        stopVoiceNotePreview()
+
+        uiState = uiState.copy(isPreviewingVoiceNote = true)
+        voicePreviewJob = viewModelScope.launch {
+            try {
+                if (withChime) {
+                    playLocalChimeInPhone()
+                }
+                if (!isActive) return@launch
+                val mp = MediaPlayer()
+                mp.setDataSource(draftFile.absolutePath)
+                mp.setOnCompletionListener {
+                    stopVoiceNotePreview()
+                }
+                mp.setOnErrorListener { _, _, _ ->
+                    stopVoiceNotePreview()
+                    showMessage("Gagal memutar pratinjau rekaman")
+                    true
+                }
+                mp.prepare()
+                mp.start()
+                mediaPlayer = mp
+            } catch (err: Exception) {
+                stopVoiceNotePreview()
+                showMessage(err.message ?: "Gagal memutar pratinjau")
+            }
+        }
+    }
+
+    fun stopVoiceNotePreview() {
+        voicePreviewJob?.cancel()
+        voicePreviewJob = null
+        runCatching { chimeTrack?.stop() }
+        runCatching { chimeTrack?.release() }
+        chimeTrack = null
+        runCatching { mediaPlayer?.stop() }
+        runCatching { mediaPlayer?.release() }
+        mediaPlayer = null
+        uiState = uiState.copy(isPreviewingVoiceNote = false)
+    }
+
+    private suspend fun playLocalChimeInPhone() = withContext(Dispatchers.IO) {
+        val sampleRate = 22050
+        val totalSamples = (sampleRate * 1.15).toInt()
+        val pcm = ShortArray(totalSamples)
+        for (i in 0 until totalSamples) {
+            val t = i.toDouble() / sampleRate
+            var sample = 0.0
+            if (t >= 0.01 && t < 0.50) {
+                val nt = t - 0.01
+                val env = exp(-nt * 6.0)
+                sample += (sin(2.0 * PI * 784.0 * nt) + 0.22 * sin(2.0 * PI * 1568.0 * nt)) * env
+            }
+            if (t >= 0.40) {
+                val nt = t - 0.40
+                val env = exp(-nt * 4.2)
+                sample += (sin(2.0 * PI * 523.25 * nt) + 0.22 * sin(2.0 * PI * 1046.5 * nt)) * env
+            }
+            val scaled = (sample * 18000.0).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+            pcm[i] = scaled.toShort()
+        }
+
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build()
+            )
+            .setBufferSizeInBytes(pcm.size * 2)
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .build()
+
+        chimeTrack = track
+        track.write(pcm, 0, pcm.size)
+        track.play()
+        delay(1150)
+        runCatching { track.stop() }
+        runCatching { track.release() }
+        if (chimeTrack === track) chimeTrack = null
+    }
+
+    fun sendVoiceNoteToBell(withChime: Boolean, label: String) {
+        val draftFile = voiceNoteDraftFile()
+        if (!draftFile.exists() || draftFile.length() == 0L) {
+            showMessage("Rekam suara terlebih dahulu")
+            return
+        }
+        stopVoiceNotePreview()
+        viewModelScope.launch {
+            uiState = uiState.copy(isBusy = true)
+            try {
+                val bytes = withContext(Dispatchers.IO) { draftFile.readBytes() }
+                api.uploadVoiceNoteAnnouncement(
+                    fileName = "pengumuman.m4a",
+                    mimeType = "audio/mp4",
+                    bytes = bytes,
+                    withChime = withChime,
+                    label = label.ifBlank { "Pengumuman Langsung" }
+                )
+                showMessage("Pengumuman suara dikirim ke PC Bel!")
+            } catch (err: Exception) {
+                showMessage(err.message ?: "Gagal mengirim pengumuman suara")
+            } finally {
+                uiState = uiState.copy(isBusy = false)
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun startLiveMic(withChime: Boolean) {
+        if (uiState.isLiveMicActive) return
+        stopVoiceNotePreview()
+        stopVoiceNoteRecording(keepFile = false)
+
+        val sampleRate = 16000
+        uiState = uiState.copy(isBusy = true)
+        socketClient.startLiveMic(withChime, sampleRate) { ok, res ->
+            viewModelScope.launch(Dispatchers.Main) {
+                uiState = uiState.copy(isBusy = false)
+                if (!ok || res.isBlank()) {
+                    showMessage(res.ifBlank { "Gagal memulai Live Mic" })
+                    return@launch
+                }
+
+                val sessionId = res
+                liveMicSessionId = sessionId
+                val minBuf = AudioRecord.getMinBufferSize(
+                    sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                )
+                val bufSize = maxOf(minBuf, 4096)
+                val recorder = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufSize
+                )
+                if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+                    runCatching { recorder.release() }
+                    socketClient.stopLiveMic(sessionId)
+                    liveMicSessionId = null
+                    showMessage("Mikrofon HP gagal diinisialisasi")
+                    return@launch
+                }
+
+                liveAudioRecord = recorder
+                uiState = uiState.copy(isLiveMicActive = true, liveMicDurationSec = 0)
+
+                liveMicTimerJob?.cancel()
+                liveMicTimerJob = viewModelScope.launch {
+                    while (isActive) {
+                        delay(1000)
+                        uiState = uiState.copy(liveMicDurationSec = uiState.liveMicDurationSec + 1)
+                    }
+                }
+
+                liveMicStreamJob?.cancel()
+                liveMicStreamJob = viewModelScope.launch(Dispatchers.IO) {
+                    val chunkBytes = ByteArray(3200) // ~100ms at 16kHz 16-bit mono
+                    runCatching { recorder.startRecording() }
+                    try {
+                        while (isActive && liveMicSessionId == sessionId) {
+                            val read = recorder.read(chunkBytes, 0, chunkBytes.size)
+                            if (read > 0) {
+                                val slice = if (read == chunkBytes.size) chunkBytes else chunkBytes.copyOf(read)
+                                val b64 = Base64.encodeToString(slice, Base64.NO_WRAP)
+                                socketClient.sendLiveMicChunk(sessionId, b64, sampleRate)
+                            } else {
+                                delay(20)
+                            }
+                        }
+                    } finally {
+                        runCatching { recorder.stop() }
+                        runCatching { recorder.release() }
+                    }
+                }
+            }
+        }
+    }
+
+    fun stopLiveMic() {
+        liveMicTimerJob?.cancel()
+        liveMicTimerJob = null
+        val sid = liveMicSessionId
+        liveMicSessionId = null
+        liveMicStreamJob?.cancel()
+        liveMicStreamJob = null
+        runCatching { liveAudioRecord?.stop() }
+        runCatching { liveAudioRecord?.release() }
+        liveAudioRecord = null
+        if (sid != null) {
+            socketClient.stopLiveMic(sid)
+            showMessage("Siaran Live Mic selesai")
+        }
+        uiState = uiState.copy(isLiveMicActive = false, liveMicDurationSec = 0)
     }
 }

@@ -271,6 +271,46 @@ class ApiClient(private val prefs: AppPreferences) {
 
     suspend fun cancelShutdown() = requestUnit("POST", "/api/remote/cancel-shutdown")
 
+    suspend fun playChime() = requestUnit("POST", "/api/remote/play-chime")
+
+    suspend fun uploadVoiceNoteAnnouncement(
+        fileName: String,
+        mimeType: String,
+        bytes: ByteArray,
+        withChime: Boolean,
+        label: String
+    ) = withContext(Dispatchers.IO) {
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart(
+                "file",
+                fileName,
+                bytes.toRequestBody(mimeType.toMediaType())
+            )
+            .build()
+
+        val encodedLabel = URLEncoder.encode(label.ifBlank { "Pengumuman Langsung" }, "UTF-8")
+        val builder = Request.Builder()
+            .url("${baseUrl()}/api/remote/announce-voice-note?withChime=$withChime&label=$encodedLabel")
+            .post(body)
+        prefs.authToken?.takeIf { it.isNotBlank() }?.let {
+            builder.header("Authorization", "Bearer $it")
+        }
+
+        httpClient.newCall(builder.build()).execute().use { response ->
+            val rawText = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                val parsedError = runCatching {
+                    json.decodeFromString<ErrorResponse>(rawText).error
+                }.getOrNull()
+                throw ApiException(
+                    parsedError ?: "Gagal mengirim pengumuman (${response.code})",
+                    response.code
+                )
+            }
+        }
+    }
+
     // --- Audio ---
     suspend fun listServerAudio(): ServerAudioFilesResponse =
         request("GET", "/api/audio/server-files")

@@ -57,6 +57,7 @@ export interface AudioPlayJob {
   slotLabel: string;
   scheduledTime: string | null;
   actorName: string | null;
+  chimeBefore?: boolean;
   steps: AudioStep[];
 }
 

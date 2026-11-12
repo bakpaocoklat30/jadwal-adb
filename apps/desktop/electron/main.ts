@@ -29,6 +29,9 @@ import {
   type AudioFileEntry,
   type AudioStep,
   type BellLogInput,
+  type LiveMicChunkPayload,
+  type LiveMicStartPayload,
+  type LiveMicStopPayload,
   type RemoteCommand,
   type ScheduleSnapshot,
   type ServerAudioFile,
@@ -78,6 +81,7 @@ let audioFiles: AudioFileEntry[] = [];
 let isPlaying = false;
 let currentPlayingLabel: string | null = null;
 let activeJobId: string | null = null;
+let activeLiveMic: { sessionId: string; requestedBy: string } | null = null;
 
 let shutdownState: ShutdownState = 'idle';
 let shutdownAction: ShutdownAction | null = null;
@@ -191,6 +195,7 @@ function scanAudioDirectory(dir: string): AudioFileEntry[] {
       return;
     }
     for (const entry of entries) {
+      if (entry.name === '_temp_announce') continue;
       const fullPath = path.join(currentDir, entry.name);
       if (entry.isDirectory()) {
         walk(fullPath, depth + 1);
@@ -329,6 +334,39 @@ async function downloadServerAudioFile(fileName: string, targetPath: string): Pr
   const tmpPath = `${targetPath}.tmp`;
   fs.writeFileSync(tmpPath, Buffer.from(arrayBuf));
   fs.renameSync(tmpPath, targetPath);
+}
+
+async function downloadAnnouncementFile(fileName: string, targetPath: string): Promise<void> {
+  const base = store.config.serverUrl.replace(/\/+$/, '');
+  const res = await fetch(
+    `${base}/api/device/announcements/${encodeURIComponent(path.basename(fileName))}`,
+    {
+      headers: { 'x-device-token': store.config.deviceToken }
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`Gagal mengunduh pengumuman ${fileName}: HTTP ${res.status}`);
+  }
+  const arrayBuf = await res.arrayBuffer();
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  const tmpPath = `${targetPath}.tmp`;
+  fs.writeFileSync(tmpPath, Buffer.from(arrayBuf));
+  fs.renameSync(tmpPath, targetPath);
+
+  // Prune older temporary announcements beyond newest 10 files
+  try {
+    const dir = path.dirname(targetPath);
+    const items = fs
+      .readdirSync(dir)
+      .filter((f) => !f.endsWith('.tmp'))
+      .map((f) => ({ f, mtimeMs: fs.statSync(path.join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    for (const old of items.slice(10)) {
+      fs.unlinkSync(path.join(dir, old.f));
+    }
+  } catch {
+    // ignore cleanup error
+  }
 }
 
 let syncingServerAudio = false;
@@ -654,6 +692,24 @@ async function dispatchPlayJob(job: Omit<AudioPlayJob, 'jobId'>): Promise<void> 
 
 function stopPlayback(): void {
   activeJobId = null;
+  if (activeLiveMic) {
+    const finished = activeLiveMic;
+    activeLiveMic = null;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('live:stop', { sessionId: finished.sessionId });
+    }
+    recordAndFlushLog({
+      occurredAt: new Date().toISOString(),
+      triggerType: 'manual',
+      status: 'stopped',
+      profileName: null,
+      slotLabel: 'Live Mic Pengumuman',
+      scheduledTime: null,
+      files: ['live-mic'],
+      actorName: finished.requestedBy,
+      detail: 'Live Mic dihentikan'
+    });
+  }
   isPlaying = false;
   currentPlayingLabel = null;
   emitUIState();
@@ -819,6 +875,59 @@ function handleRemoteCommand(cmd: RemoteCommand): void {
     case 'cancel_shutdown':
       cancelPendingShutdown(cmd.requestedBy);
       break;
+    case 'play_chime':
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('audio:play-chime');
+      }
+      recordAndFlushLog({
+        occurredAt: new Date().toISOString(),
+        triggerType: 'manual',
+        status: 'played',
+        profileName: null,
+        slotLabel: 'Nada Ting-Tong Pengumuman',
+        scheduledTime: null,
+        files: ['ting-tong-chime'],
+        actorName: cmd.requestedBy,
+        detail: null
+      });
+      break;
+    case 'play_announcement':
+      void (async () => {
+        try {
+          const safeName = path.basename(cmd.fileName);
+          const targetPath = path.join(store.config.audioDir, '_temp_announce', safeName);
+          await downloadAnnouncementFile(safeName, targetPath);
+          await dispatchPlayJob({
+            triggerType: 'manual',
+            profileName: null,
+            slotLabel: cmd.label,
+            scheduledTime: null,
+            actorName: cmd.requestedBy,
+            chimeBefore: cmd.withChime,
+            steps: [
+              {
+                id: crypto.randomUUID(),
+                fileName: `_temp_announce/${safeName}`,
+                delayBeforeMs: 0,
+                volume: 100
+              }
+            ]
+          });
+        } catch (err) {
+          recordAndFlushLog({
+            occurredAt: new Date().toISOString(),
+            triggerType: 'manual',
+            status: 'failed',
+            profileName: null,
+            slotLabel: cmd.label,
+            scheduledTime: null,
+            files: [cmd.fileName],
+            actorName: cmd.requestedBy,
+            detail: err instanceof Error ? err.message : 'Gagal mengunduh pengumuman'
+          });
+        }
+      })();
+      break;
   }
 }
 
@@ -881,6 +990,54 @@ function connectSocket(): void {
 
   socket.on('server_audio:updated', (files: ServerAudioFile[]) => {
     void syncServerAudioFiles(files);
+  });
+
+  socket.on('device:live_mic_start', (payload: LiveMicStartPayload) => {
+    stopPlayback();
+    activeLiveMic = {
+      sessionId: payload.sessionId,
+      requestedBy: payload.requestedBy
+    };
+    isPlaying = true;
+    currentPlayingLabel = `Live Mic (${payload.requestedBy})`;
+    emitUIState();
+    sendHeartbeat();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('live:start', payload);
+    }
+  });
+
+  socket.on('device:live_mic_chunk', (payload: LiveMicChunkPayload) => {
+    if (!activeLiveMic || activeLiveMic.sessionId !== payload.sessionId) return;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('live:chunk', payload);
+    }
+  });
+
+  socket.on('device:live_mic_stop', (payload: LiveMicStopPayload) => {
+    if (!activeLiveMic || (payload.sessionId && activeLiveMic.sessionId !== payload.sessionId)) {
+      return;
+    }
+    const finished = activeLiveMic;
+    activeLiveMic = null;
+    isPlaying = false;
+    currentPlayingLabel = null;
+    emitUIState();
+    sendHeartbeat();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('live:stop', payload);
+    }
+    recordAndFlushLog({
+      occurredAt: new Date().toISOString(),
+      triggerType: 'manual',
+      status: 'played',
+      profileName: null,
+      slotLabel: 'Pengumuman Live Mic',
+      scheduledTime: null,
+      files: ['live-mic'],
+      actorName: finished.requestedBy,
+      detail: null
+    });
   });
 }
 

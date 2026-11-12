@@ -198,7 +198,38 @@ export type RemoteCommand =
       type: 'cancel_shutdown';
       commandId: string;
       requestedBy: string;
+    }
+  | {
+      type: 'play_chime';
+      commandId: string;
+      requestedBy: string;
+    }
+  | {
+      type: 'play_announcement';
+      commandId: string;
+      label: string;
+      fileName: string;
+      withChime: boolean;
+      requestedBy: string;
     };
+
+export interface LiveMicStartPayload {
+  sessionId: string;
+  requestedBy: string;
+  withChime: boolean;
+  sampleRate: number;
+}
+
+export interface LiveMicChunkPayload {
+  sessionId: string;
+  pcmBase64: string;
+  sampleRate: number;
+}
+
+export interface LiveMicStopPayload {
+  sessionId: string;
+  requestedBy?: string;
+}
 
 export interface ZonedDateParts {
   dateStr: string; // YYYY-MM-DD

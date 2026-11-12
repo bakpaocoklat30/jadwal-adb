@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AudioStep, ScheduleSnapshot, ShutdownAction } from '@jadwal-adb/shared';
+import type {
+  AudioStep,
+  LiveMicChunkPayload,
+  LiveMicStartPayload,
+  LiveMicStopPayload,
+  ScheduleSnapshot,
+  ShutdownAction
+} from '@jadwal-adb/shared';
 import type {
   AudioPlayJob,
   AudioPlayResult,
@@ -44,6 +51,10 @@ export interface DesktopBridge {
   onStateUpdated: (cb: (state: DesktopUIState) => void) => () => void;
   onPlayAudioJob: (cb: (job: AudioPlayJob) => void) => () => void;
   onStopAudioCommand: (cb: () => void) => () => void;
+  onPlayChime: (cb: () => void) => () => void;
+  onLiveMicStart: (cb: (payload: LiveMicStartPayload) => void) => () => void;
+  onLiveMicChunk: (cb: (payload: LiveMicChunkPayload) => void) => () => void;
+  onLiveMicStop: (cb: (payload: LiveMicStopPayload) => void) => () => void;
 }
 
 const bridge: DesktopBridge = {
@@ -83,6 +94,26 @@ const bridge: DesktopBridge = {
     const listener = () => cb();
     ipcRenderer.on('audio:stop', listener);
     return () => ipcRenderer.removeListener('audio:stop', listener);
+  },
+  onPlayChime: (cb) => {
+    const listener = () => cb();
+    ipcRenderer.on('audio:play-chime', listener);
+    return () => ipcRenderer.removeListener('audio:play-chime', listener);
+  },
+  onLiveMicStart: (cb) => {
+    const listener = (_: unknown, payload: LiveMicStartPayload) => cb(payload);
+    ipcRenderer.on('live:start', listener);
+    return () => ipcRenderer.removeListener('live:start', listener);
+  },
+  onLiveMicChunk: (cb) => {
+    const listener = (_: unknown, payload: LiveMicChunkPayload) => cb(payload);
+    ipcRenderer.on('live:chunk', listener);
+    return () => ipcRenderer.removeListener('live:chunk', listener);
+  },
+  onLiveMicStop: (cb) => {
+    const listener = (_: unknown, payload: LiveMicStopPayload) => cb(payload);
+    ipcRenderer.on('live:stop', listener);
+    return () => ipcRenderer.removeListener('live:stop', listener);
   }
 };
 

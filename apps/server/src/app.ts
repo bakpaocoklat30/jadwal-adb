@@ -62,7 +62,7 @@ export async function buildServerApp(config: ServerConfig): Promise<BuiltApp> {
   registerBackupRoutes(app, db, hub, config.backupsDir, config.timeZone);
   registerScheduleRoutes(app, db, hub);
   registerDeviceRoutes(app, db, hub);
-  registerRemoteRoutes(app, db, hub);
+  registerRemoteRoutes(app, db, hub, config.uploadsDir);
 
   // Automatic daily database backup scheduler
   let lastAutoBackupDate = '';

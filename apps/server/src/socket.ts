@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { Server as HttpServer } from 'node:http';
 import { Server as SocketIOServer, type Socket } from 'socket.io';
 import {
@@ -158,6 +159,77 @@ export class RealtimeHub {
 
     if (socket.data.kind === 'user') {
       socket.join('admins');
+      let activeLiveSessionId: string | null = null;
+
+      socket.on('announce:live_start', (raw: unknown, ack) => {
+        if (!this.isDeviceConnected()) {
+          if (typeof ack === 'function') {
+            ack({ ok: false, error: 'PC Bel sedang offline / tidak terhubung ke server' });
+          }
+          return;
+        }
+        const body = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
+        const withChime = body.withChime !== false;
+        const sampleRate =
+          typeof body.sampleRate === 'number' && body.sampleRate >= 8000 && body.sampleRate <= 48000
+            ? Math.round(body.sampleRate)
+            : 16000;
+        const sessionId = crypto.randomUUID();
+        activeLiveSessionId = sessionId;
+        const requestedBy = String(socket.data.user?.displayName || 'Admin');
+
+        this.io.to('device').emit('device:live_mic_start', {
+          sessionId,
+          requestedBy,
+          withChime,
+          sampleRate
+        });
+
+        if (typeof ack === 'function') {
+          ack({ ok: true, sessionId });
+        }
+      });
+
+      socket.on('announce:live_chunk', (raw: unknown) => {
+        if (!activeLiveSessionId || !this.isDeviceConnected()) return;
+        const body = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
+        if (body.sessionId !== activeLiveSessionId) return;
+        if (typeof body.pcmBase64 !== 'string' || body.pcmBase64.length === 0 || body.pcmBase64.length > 262144) {
+          return;
+        }
+        const sampleRate =
+          typeof body.sampleRate === 'number' && body.sampleRate >= 8000 && body.sampleRate <= 48000
+            ? Math.round(body.sampleRate)
+            : 16000;
+        this.io.to('device').emit('device:live_mic_chunk', {
+          sessionId: activeLiveSessionId,
+          pcmBase64: body.pcmBase64,
+          sampleRate
+        });
+      });
+
+      socket.on('announce:live_stop', (raw: unknown) => {
+        if (!activeLiveSessionId) return;
+        const body = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
+        if (body.sessionId && body.sessionId !== activeLiveSessionId) return;
+        const finishedId = activeLiveSessionId;
+        activeLiveSessionId = null;
+        this.io.to('device').emit('device:live_mic_stop', {
+          sessionId: finishedId,
+          requestedBy: String(socket.data.user?.displayName || 'Admin')
+        });
+      });
+
+      socket.on('disconnect', () => {
+        if (activeLiveSessionId) {
+          const finishedId = activeLiveSessionId;
+          activeLiveSessionId = null;
+          this.io.to('device').emit('device:live_mic_stop', {
+            sessionId: finishedId,
+            requestedBy: String(socket.data.user?.displayName || 'Admin')
+          });
+        }
+      });
     }
   }
 

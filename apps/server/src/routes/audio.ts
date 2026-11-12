@@ -166,4 +166,24 @@ export function registerAudioRoutes(
       return streamAudioFile(uploadsDir, fileName, reply);
     }
   );
+
+  // Device download endpoint for ephemeral voice-note announcements
+  const announcementsDir = path.join(uploadsDir, '_announcements');
+  fs.mkdirSync(announcementsDir, { recursive: true });
+  app.get(
+    '/api/device/announcements/:fileName',
+    { preHandler: requireDeviceToken(db) },
+    async (request, reply) => {
+      const { fileName } = request.params as { fileName: string };
+      const target = resolveInsideUploads(announcementsDir, fileName);
+      if (!target || !fs.existsSync(target)) {
+        return reply.code(404).send({ error: 'File pengumuman tidak ditemukan di server' });
+      }
+      const stat = fs.statSync(target);
+      const ext = path.extname(target).toLowerCase();
+      reply.header('Content-Type', MIME_BY_EXT[ext] || 'audio/mp4');
+      reply.header('Content-Length', String(stat.size));
+      return reply.send(fs.createReadStream(target));
+    }
+  );
 }

@@ -1,5 +1,6 @@
 package id.sch.smkn1adw.beladb.data
 
+import io.socket.client.Ack
 import io.socket.client.IO
 import io.socket.client.Socket
 import kotlinx.serialization.json.Json
@@ -85,6 +86,50 @@ class SocketClient(private val json: Json) {
         }
 
         client.connect()
+    }
+
+    fun startLiveMic(
+        withChime: Boolean,
+        sampleRate: Int,
+        onResult: (ok: Boolean, sessionIdOrError: String) -> Unit
+    ) {
+        val current = socket
+        if (current == null || !current.connected()) {
+            onResult(false, "Socket belum terhubung ke server")
+            return
+        }
+        val payload = JSONObject().apply {
+            put("withChime", withChime)
+            put("sampleRate", sampleRate)
+        }
+        current.emit("announce:live_start", payload, Ack { args ->
+            val res = args.firstOrNull() as? JSONObject
+            val ok = res?.optBoolean("ok", false) == true
+            if (ok) {
+                onResult(true, res?.optString("sessionId").orEmpty())
+            } else {
+                onResult(false, res?.optString("error") ?: "Gagal memulai Live Mic")
+            }
+        })
+    }
+
+    fun sendLiveMicChunk(sessionId: String, pcmBase64: String, sampleRate: Int) {
+        val current = socket ?: return
+        if (!current.connected()) return
+        val payload = JSONObject().apply {
+            put("sessionId", sessionId)
+            put("pcmBase64", pcmBase64)
+            put("sampleRate", sampleRate)
+        }
+        current.emit("announce:live_chunk", payload)
+    }
+
+    fun stopLiveMic(sessionId: String) {
+        val current = socket ?: return
+        val payload = JSONObject().apply {
+            put("sessionId", sessionId)
+        }
+        current.emit("announce:live_stop", payload)
     }
 
     fun disconnect() {

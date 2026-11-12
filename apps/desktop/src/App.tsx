@@ -54,15 +54,90 @@ export function App() {
     jobId: string;
     abort: () => void;
   } | null>(null);
+  const liveMicRef = useRef<{
+    sessionId: string;
+    ctx: AudioContext;
+    gain: GainNode;
+    nextTime: number;
+    stopTimer?: ReturnType<typeof setTimeout>;
+  } | null>(null);
   const stateRef = useRef<DesktopUIState | null>(null);
   stateRef.current = state;
+
+  const stopLiveMic = useCallback(() => {
+    const cur = liveMicRef.current;
+    if (cur) {
+      if (cur.stopTimer) clearTimeout(cur.stopTimer);
+      liveMicRef.current = null;
+      void cur.ctx.close().catch(() => {});
+    }
+  }, []);
 
   const stopActiveAudio = useCallback(() => {
     if (activeAudioRef.current) {
       activeAudioRef.current.abort();
       activeAudioRef.current = null;
     }
+    stopLiveMic();
+  }, [stopLiveMic]);
+
+  const scheduleChimeInContext = useCallback((ctx: AudioContext, dest: AudioNode) => {
+    const playTone = (freq: number, startOffset: number, dur: number) => {
+      const t0 = ctx.currentTime + startOffset;
+      const osc = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const env = ctx.createGain();
+      const harmGain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t0);
+      osc2.type = 'triangle';
+      osc2.frequency.setValueAtTime(freq * 2, t0);
+      harmGain.gain.value = 0.22;
+
+      env.gain.setValueAtTime(0.001, t0);
+      env.gain.exponentialRampToValueAtTime(0.85, t0 + 0.015);
+      env.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+
+      osc.connect(env);
+      osc2.connect(harmGain);
+      harmGain.connect(env);
+      env.connect(dest);
+
+      osc.start(t0);
+      osc2.start(t0);
+      osc.stop(t0 + dur + 0.05);
+      osc2.stop(t0 + dur + 0.05);
+    };
+
+    playTone(784, 0.02, 0.45);
+    playTone(523.25, 0.42, 0.78);
   }, []);
+
+  const playStandaloneChime = useCallback(async (): Promise<void> => {
+    const cfg = stateRef.current?.config;
+    const vol = Math.max(0, Math.min(1, (cfg?.masterVolume ?? 100) / 100));
+    const ctx = new AudioContext();
+    const sinkId = cfg?.audioOutputDeviceId;
+    const sinkCtx = ctx as AudioContext & { setSinkId?: (id: string) => Promise<void> };
+    if (sinkId && typeof sinkCtx.setSinkId === 'function') {
+      await sinkCtx.setSinkId(sinkId).catch(() => {});
+    }
+    if (ctx.state === 'suspended') {
+      await ctx.resume().catch(() => {});
+    }
+    const gain = ctx.createGain();
+    gain.gain.value = vol;
+    gain.connect(ctx.destination);
+    scheduleChimeInContext(ctx, gain);
+
+    await new Promise<void>((resolve) => {
+      setTimeout(() => {
+        void ctx.close().catch(() => {});
+        resolve();
+      }, 1250);
+    });
+  }, [scheduleChimeInContext]);
 
   const playJob = useCallback(
     async (job: AudioPlayJob) => {
@@ -87,6 +162,10 @@ export function App() {
       };
       activeAudioRef.current = controller;
       window.desktopApi.reportAudioStarted(job.jobId, job.slotLabel);
+
+      if (job.chimeBefore && !aborted) {
+        await playStandaloneChime();
+      }
 
       const playedFiles: string[] = [];
       const missingFiles: string[] = [];
@@ -202,7 +281,7 @@ export function App() {
         detail
       });
     },
-    [stopActiveAudio]
+    [playStandaloneChime, stopActiveAudio]
   );
 
   useEffect(() => {
@@ -234,6 +313,85 @@ export function App() {
     const unsubStop = window.desktopApi.onStopAudioCommand(() => {
       stopActiveAudio();
     });
+    const unsubChime = window.desktopApi.onPlayChime(() => {
+      void playStandaloneChime();
+    });
+    const unsubLiveStart = window.desktopApi.onLiveMicStart((payload) => {
+      stopActiveAudio();
+      const cfg = stateRef.current?.config;
+      const sr = payload.sampleRate || 16000;
+      const ctx = new AudioContext({ sampleRate: sr });
+      const sinkId = cfg?.audioOutputDeviceId;
+      const sinkCtx = ctx as AudioContext & { setSinkId?: (id: string) => Promise<void> };
+      if (sinkId && typeof sinkCtx.setSinkId === 'function') {
+        void sinkCtx.setSinkId(sinkId).catch(() => {});
+      }
+      if (ctx.state === 'suspended') {
+        void ctx.resume().catch(() => {});
+      }
+      const gain = ctx.createGain();
+      gain.gain.value = Math.max(0, Math.min(1, (cfg?.masterVolume ?? 100) / 100));
+      gain.connect(ctx.destination);
+
+      let initialNext = ctx.currentTime + 0.08;
+      if (payload.withChime) {
+        scheduleChimeInContext(ctx, gain);
+        initialNext = ctx.currentTime + 1.18;
+      }
+
+      liveMicRef.current = {
+        sessionId: payload.sessionId,
+        ctx,
+        gain,
+        nextTime: initialNext
+      };
+    });
+    const unsubLiveChunk = window.desktopApi.onLiveMicChunk((payload) => {
+      const session = liveMicRef.current;
+      if (!session || session.sessionId !== payload.sessionId || session.ctx.state === 'closed') {
+        return;
+      }
+      try {
+        const binary = atob(payload.pcmBase64);
+        const byteLen = binary.length;
+        const bytes = new Uint8Array(byteLen);
+        for (let i = 0; i < byteLen; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        const sampleCount = Math.floor(byteLen / 2);
+        if (sampleCount <= 0) return;
+
+        const sr = payload.sampleRate || 16000;
+        const audioBuf = session.ctx.createBuffer(1, sampleCount, sr);
+        const channel = audioBuf.getChannelData(0);
+        const view = new DataView(bytes.buffer);
+        for (let i = 0; i < sampleCount; i++) {
+          channel[i] = view.getInt16(i * 2, true) / 32768;
+        }
+
+        const src = session.ctx.createBufferSource();
+        src.buffer = audioBuf;
+        src.connect(session.gain);
+
+        const nowT = session.ctx.currentTime;
+        if (session.nextTime < nowT) {
+          session.nextTime = nowT + 0.04;
+        }
+        src.start(session.nextTime);
+        session.nextTime += audioBuf.duration;
+      } catch {
+        // Skip malformed chunk
+      }
+    });
+    const unsubLiveStop = window.desktopApi.onLiveMicStop((payload) => {
+      const session = liveMicRef.current;
+      if (!session) return;
+      if (payload.sessionId && session.sessionId !== payload.sessionId) return;
+      if (session.stopTimer) clearTimeout(session.stopTimer);
+      session.stopTimer = setTimeout(() => {
+        stopLiveMic();
+      }, 350);
+    });
 
     const tick = setInterval(() => setNowMs(Date.now()), 1000);
 
@@ -252,11 +410,15 @@ export function App() {
       unsubState();
       unsubPlay();
       unsubStop();
+      unsubChime();
+      unsubLiveStart();
+      unsubLiveChunk();
+      unsubLiveStop();
       clearInterval(tick);
       window.removeEventListener('pointerdown', onUserActivity);
       window.removeEventListener('keydown', onUserActivity);
     };
-  }, [playJob, stopActiveAudio]);
+  }, [playJob, playStandaloneChime, scheduleChimeInContext, stopActiveAudio, stopLiveMic]);
 
   if (!state) {
     return (
