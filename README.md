@@ -60,12 +60,14 @@ Salin ke PC Windows bel sekolah, lalu:
 
 ### Opsi A: Docker Compose (Direkomendasikan)
 
-1. Salin `.env.example` menjadi `.env` dan isi `JWT_SECRET`.
-2. Jalankan:
+1. Jalankan script otomatis (membuat `.env`, `git pull`, dan `docker compose up -d --build`):
    ```bash
-   docker compose up -d --build
+   chmod +x deploy.sh
+   ./deploy.sh
    ```
-3. Arahkan Nginx/Caddy (HTTPS + WebSocket proxy) ke `http://127.0.0.1:4000`.
+   Setiap ada pembaruan di GitHub, cukup jalankan ulang `./deploy.sh` di server.
+2. Secara default aplikasi terbuka di port `7029` (ubah `APP_PORT` di `.env` jika perlu).
+3. Jika memakai domain HTTPS, arahkan Nginx/Caddy (HTTPS + WebSocket proxy) ke `http://127.0.0.1:7029`.
 
 ### Opsi B: Node.js (>= 22.13) + PM2
 
