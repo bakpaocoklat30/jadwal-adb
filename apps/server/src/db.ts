@@ -720,6 +720,93 @@ export class AppDatabase {
     return next;
   }
 
+  public replaceScheduleFromDevice(input: {
+    profiles: Array<{
+      id: string;
+      name: string;
+      description: string;
+      color: string;
+      slots: ScheduleSlot[];
+      createdAt?: string;
+      updatedAt?: string;
+    }>;
+    weeklyRules: Array<{ dayOfWeek: number; profileId: string | null }>;
+    dateOverrides: Array<{
+      id: string;
+      startDate: string;
+      endDate: string;
+      profileId: string | null;
+      note: string;
+      createdBy: string;
+      createdAt?: string;
+    }>;
+    shutdownSettings: Omit<ShutdownSettings, 'updatedAt'>;
+  }): ScheduleSnapshot {
+    const now = new Date().toISOString();
+    const validProfileIds = new Set(input.profiles.map((p) => p.id));
+
+    this.sqlite.exec('BEGIN IMMEDIATE;');
+    try {
+      this.sqlite.prepare('DELETE FROM profiles').run();
+      const insertProfile = this.sqlite.prepare(`
+        INSERT INTO profiles (id, name, description, color, slots_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const prof of input.profiles) {
+        insertProfile.run(
+          prof.id,
+          prof.name,
+          prof.description,
+          prof.color,
+          JSON.stringify(sortSlots(prof.slots)),
+          prof.createdAt || now,
+          now
+        );
+      }
+
+      const insertWeekly = this.sqlite.prepare(
+        'INSERT OR REPLACE INTO weekly_rules (day_of_week, profile_id, updated_at) VALUES (?, ?, ?)'
+      );
+      for (const rule of input.weeklyRules) {
+        const pid = rule.profileId && validProfileIds.has(rule.profileId) ? rule.profileId : null;
+        insertWeekly.run(rule.dayOfWeek, pid, now);
+      }
+
+      this.sqlite.prepare('DELETE FROM date_overrides').run();
+      const insertOverride = this.sqlite.prepare(`
+        INSERT INTO date_overrides (id, start_date, end_date, profile_id, note, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const ov of input.dateOverrides) {
+        const pid = ov.profileId && validProfileIds.has(ov.profileId) ? ov.profileId : null;
+        insertOverride.run(
+          ov.id,
+          ov.startDate,
+          ov.endDate,
+          pid,
+          ov.note,
+          ov.createdBy || 'PC Bel Desktop',
+          ov.createdAt || now
+        );
+      }
+
+      this.setMeta(
+        'shutdown_settings',
+        JSON.stringify({
+          ...input.shutdownSettings,
+          updatedAt: now
+        })
+      );
+      this.bumpScheduleVersion();
+      this.sqlite.exec('COMMIT;');
+    } catch (err) {
+      this.sqlite.exec('ROLLBACK;');
+      throw err;
+    }
+
+    return this.getScheduleSnapshot();
+  }
+
   // --- Snapshot ---
   public getScheduleSnapshot(): ScheduleSnapshot {
     return {

@@ -5,11 +5,13 @@ import {
   Clock,
   FolderOpen,
   HardDrive,
+  Layers,
   Play,
   PowerOff,
   RefreshCw,
   Settings,
   Square,
+  Upload,
   Volume2,
   Wifi,
   WifiOff
@@ -22,8 +24,9 @@ import {
   type AudioStep
 } from '@jadwal-adb/shared';
 import type { AudioPlayJob, DesktopConfig, DesktopUIState } from '../electron/types.js';
+import { ScheduleManager } from './components/ScheduleManager.js';
 
-type DesktopTab = 'today' | 'audio' | 'settings';
+type DesktopTab = 'today' | 'manage' | 'audio' | 'settings';
 
 export function App() {
   const [state, setState] = useState<DesktopUIState | null>(null);
@@ -338,6 +341,11 @@ export function App() {
           {[
             { id: 'today' as const, label: 'Jadwal Hari Ini', icon: <Clock className="h-4 w-4" /> },
             {
+              id: 'manage' as const,
+              label: 'Kelola Jadwal',
+              icon: <Layers className="h-4 w-4" />
+            },
+            {
               id: 'audio' as const,
               label: `Folder MP3 (${state.audioFiles.length})`,
               icon: <FolderOpen className="h-4 w-4" />
@@ -386,9 +394,58 @@ export function App() {
         </div>
       </div>
 
-      {/* Warning Banners */}
-      {(state.lastError || Math.abs(driftSec) > 5 || state.pendingLogCount > 0) && (
-        <div className="space-y-1.5 border-b border-slate-800 bg-slate-900/40 px-5 py-2.5 text-xs">
+      {/* Warning & Conflict Sync Banners */}
+      {(state.conflictingServerSnapshot ||
+        state.hasLocalUnsyncedChanges ||
+        state.lastError ||
+        Math.abs(driftSec) > 5 ||
+        state.pendingLogCount > 0) && (
+        <div className="space-y-2 border-b border-slate-800 bg-slate-900/40 px-5 py-2.5 text-xs">
+          {state.conflictingServerSnapshot && (
+            <div className="flex flex-col gap-2 rounded-xl border border-rose-500/40 bg-rose-500/15 p-3 text-rose-200 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <strong>Konflik Jadwal:</strong> PC ini memiliki perubahan offline (basis v
+                {state.localBaseVersion ?? 0}), sementara jadwal di Server VPS juga berubah menjadi v
+                {state.conflictingServerSnapshot.version}.
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void window.desktopApi.pushLocalSnapshot(true)}
+                  className="rounded-lg bg-rose-600 px-3 py-1.5 font-semibold text-white hover:bg-rose-700"
+                >
+                  Timpa Server dengan Jadwal PC
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void window.desktopApi.acceptServerSnapshot()}
+                  className="rounded-lg bg-white px-3 py-1.5 font-semibold text-slate-900 hover:bg-slate-100"
+                >
+                  Gunakan Jadwal Server
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!state.conflictingServerSnapshot && state.hasLocalUnsyncedChanges && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-2 text-amber-200">
+              <span>
+                Perubahan jadwal lokal belum terkirim ke VPS (mode offline). Bel di PC ini sudah
+                menggunakan jadwal terbaru.
+              </span>
+              {state.connectedToServer && (
+                <button
+                  type="button"
+                  onClick={() => void window.desktopApi.pushLocalSnapshot(false)}
+                  className="inline-flex items-center gap-1 rounded-lg bg-amber-500 px-3 py-1 font-semibold text-slate-950 hover:bg-amber-400"
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                  Kirim ke Server Sekarang
+                </button>
+              )}
+            </div>
+          )}
+
           {state.lastError && <p className="text-amber-300">Info: {state.lastError}</p>}
           {Math.abs(driftSec) > 5 && (
             <p className="text-amber-300">
@@ -524,6 +581,24 @@ export function App() {
               </div>
             </div>
           </div>
+        )}
+
+        {tab === 'manage' && (
+          <ScheduleManager
+            snapshot={state.snapshot}
+            audioFiles={state.audioFiles}
+            clockOffsetMs={state.clockOffsetMs}
+            hasLocalUnsyncedChanges={state.hasLocalUnsyncedChanges}
+            onInitLocal={async () => {
+              const next = await window.desktopApi.initLocalSnapshot();
+              setState(next);
+            }}
+            onSaveSnapshot={async (nextSnap) => {
+              const res = await window.desktopApi.saveLocalSnapshot(nextSnap);
+              setState(res.state);
+              return res;
+            }}
+          />
         )}
 
         {tab === 'audio' && (

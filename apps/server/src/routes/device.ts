@@ -3,6 +3,7 @@ import {
   audioManifestUploadSchema,
   bellLogInputSchema,
   deviceHeartbeatSchema,
+  deviceSnapshotPushSchema,
   shutdownSettingsSchema
 } from '@jadwal-adb/shared';
 import { z } from 'zod';
@@ -73,6 +74,46 @@ export function registerDeviceRoutes(
       hub.broadcastDeviceStatus();
       return {
         snapshot: db.getScheduleSnapshot(),
+        serverNowMs: Date.now()
+      };
+    }
+  );
+
+  app.post(
+    '/api/device/snapshot',
+    { preHandler: requireDeviceToken(db) },
+    async (request, reply) => {
+      const parsed = deviceSnapshotPushSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply
+          .code(400)
+          .send({ error: parsed.error.issues[0]?.message || 'Format snapshot tidak valid' });
+      }
+
+      const currentVersion = db.getScheduleVersion();
+      if (!parsed.data.force && parsed.data.baseVersion !== currentVersion) {
+        return reply.code(409).send({
+          error: 'Jadwal di server sudah berubah oleh admin lain',
+          currentVersion,
+          serverSnapshot: db.getScheduleSnapshot(),
+          serverNowMs: Date.now()
+        });
+      }
+
+      const snapshot = db.replaceScheduleFromDevice({
+        profiles: parsed.data.profiles,
+        weeklyRules: parsed.data.weeklyRules,
+        dateOverrides: parsed.data.dateOverrides,
+        shutdownSettings: parsed.data.shutdownSettings
+      });
+      db.updateDeviceStatus({
+        lastSyncAt: new Date().toISOString(),
+        activeScheduleVersion: snapshot.version
+      });
+      hub.broadcastScheduleUpdated();
+      hub.broadcastDeviceStatus();
+      return {
+        snapshot,
         serverNowMs: Date.now()
       };
     }

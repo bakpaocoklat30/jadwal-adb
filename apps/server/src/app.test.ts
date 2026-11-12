@@ -308,3 +308,107 @@ test('web audio upload, stream preview, device download, and deletion work', asy
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('device snapshot push handles optimistic concurrency conflict and force overwrite', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jadwal-adb-test-'));
+  const { app } = await buildServerApp(testConfig(tmpDir));
+
+  try {
+    const syncRes = await app.inject({
+      method: 'GET',
+      url: '/api/device/sync',
+      headers: { 'x-device-token': 'test-device-token' }
+    });
+    assert.equal(syncRes.statusCode, 200);
+    const snap = syncRes.json().snapshot;
+    assert.equal(snap.version, 1);
+
+    // 1. Push with matching baseVersion -> 200, version bumps to 2
+    const pushOk = await app.inject({
+      method: 'POST',
+      url: '/api/device/snapshot',
+      headers: { 'x-device-token': 'test-device-token' },
+      payload: {
+        baseVersion: 1,
+        force: false,
+        profiles: [
+          {
+            id: 'p-local-1',
+            name: 'Profil dari Desktop',
+            description: 'Edit lokal',
+            color: '#2563eb',
+            slots: [
+              {
+                id: 's-1',
+                time: '07:00',
+                label: 'Masuk',
+                enabled: true,
+                steps: [{ id: 'st-1', fileName: 'jam_1.mp3', delayBeforeMs: 0, volume: 100 }]
+              }
+            ]
+          }
+        ],
+        weeklyRules: snap.weeklyRules.map((r: { dayOfWeek: number }) => ({
+          dayOfWeek: r.dayOfWeek,
+          profileId: r.dayOfWeek === 1 ? 'p-local-1' : null
+        })),
+        dateOverrides: [],
+        shutdownSettings: {
+          enabled: true,
+          time: '16:15',
+          daysOfWeek: [1, 2, 3, 4, 5],
+          graceSeconds: 20
+        }
+      }
+    });
+    assert.equal(pushOk.statusCode, 200);
+    assert.equal(pushOk.json().snapshot.version, 2);
+
+    // 2. Push with stale baseVersion=1 and force=false -> 409 Conflict
+    const pushConflict = await app.inject({
+      method: 'POST',
+      url: '/api/device/snapshot',
+      headers: { 'x-device-token': 'test-device-token' },
+      payload: {
+        baseVersion: 1,
+        force: false,
+        profiles: [],
+        weeklyRules: [0, 1, 2, 3, 4, 5, 6].map((d) => ({ dayOfWeek: d, profileId: null })),
+        dateOverrides: [],
+        shutdownSettings: {
+          enabled: false,
+          time: '16:30',
+          daysOfWeek: [1, 2, 3, 4, 5],
+          graceSeconds: 20
+        }
+      }
+    });
+    assert.equal(pushConflict.statusCode, 409);
+    assert.equal(pushConflict.json().currentVersion, 2);
+
+    // 3. Push with force=true -> 200, version bumps to 3
+    const pushForce = await app.inject({
+      method: 'POST',
+      url: '/api/device/snapshot',
+      headers: { 'x-device-token': 'test-device-token' },
+      payload: {
+        baseVersion: 1,
+        force: true,
+        profiles: [],
+        weeklyRules: [0, 1, 2, 3, 4, 5, 6].map((d) => ({ dayOfWeek: d, profileId: null })),
+        dateOverrides: [],
+        shutdownSettings: {
+          enabled: false,
+          time: '16:30',
+          daysOfWeek: [1, 2, 3, 4, 5],
+          graceSeconds: 20
+        }
+      }
+    });
+    assert.equal(pushForce.statusCode, 200);
+    assert.equal(pushForce.json().snapshot.version, 3);
+  } finally {
+    await app.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

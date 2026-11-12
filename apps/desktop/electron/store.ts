@@ -9,6 +9,9 @@ interface PersistedRuntimeState {
   shutdownTriggeredDates: string[];
   pendingLogs: BellLogInput[];
   recentLogs: BellLogInput[];
+  hasLocalUnsyncedChanges: boolean;
+  localBaseVersion: number | null;
+  localModifiedAt: string | null;
 }
 
 function writeJsonAtomic(filePath: string, data: unknown): void {
@@ -68,7 +71,10 @@ export class DesktopStore {
       playedKeys: loadedState?.playedKeys ?? [],
       shutdownTriggeredDates: loadedState?.shutdownTriggeredDates ?? [],
       pendingLogs: loadedState?.pendingLogs ?? [],
-      recentLogs: loadedState?.recentLogs ?? []
+      recentLogs: loadedState?.recentLogs ?? [],
+      hasLocalUnsyncedChanges: loadedState?.hasLocalUnsyncedChanges ?? false,
+      localBaseVersion: loadedState?.localBaseVersion ?? null,
+      localModifiedAt: loadedState?.localModifiedAt ?? null
     };
   }
 
@@ -84,6 +90,26 @@ export class DesktopStore {
   public saveSnapshot(snapshot: ScheduleSnapshot): void {
     this.snapshot = snapshot;
     writeJsonAtomic(this.snapshotPath, snapshot);
+  }
+
+  public saveLocalModifiedSnapshot(snapshot: ScheduleSnapshot): void {
+    if (!this.state.hasLocalUnsyncedChanges) {
+      this.state.localBaseVersion = this.snapshot?.version ?? snapshot.version;
+    }
+    this.state.hasLocalUnsyncedChanges = true;
+    this.state.localModifiedAt = new Date().toISOString();
+    this.snapshot = snapshot;
+    writeJsonAtomic(this.snapshotPath, snapshot);
+    this.saveState();
+  }
+
+  public markSnapshotSynced(serverSnapshot: ScheduleSnapshot): void {
+    this.snapshot = serverSnapshot;
+    writeJsonAtomic(this.snapshotPath, serverSnapshot);
+    this.state.hasLocalUnsyncedChanges = false;
+    this.state.localBaseVersion = serverSnapshot.version;
+    this.state.localModifiedAt = null;
+    this.saveState();
   }
 
   public markPlayed(key: string, currentDateStr: string): void {

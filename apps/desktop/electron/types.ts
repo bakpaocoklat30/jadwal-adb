@@ -29,6 +29,10 @@ export interface DesktopUIState {
   lastSyncAt: string | null;
   clockOffsetMs: number;
   snapshot: ScheduleSnapshot | null;
+  hasLocalUnsyncedChanges: boolean;
+  localBaseVersion: number | null;
+  localModifiedAt: string | null;
+  conflictingServerSnapshot: ScheduleSnapshot | null;
   audioFiles: AudioFileEntry[];
   pendingLogCount: number;
   recentLogs: BellLogInput[];

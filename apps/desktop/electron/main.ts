@@ -21,6 +21,7 @@ import {
   getZonedDateParts,
   resolveDaySchedule,
   shouldTriggerAutoShutdown,
+  sortSlots,
   type AudioFileEntry,
   type AudioStep,
   type BellLogInput,
@@ -68,6 +69,7 @@ let connectedToServer = false;
 let lastError: string | null = null;
 let lastSyncAt: string | null = null;
 let clockOffsetMs = 0;
+let conflictingServerSnapshot: ScheduleSnapshot | null = null;
 let audioFiles: AudioFileEntry[] = [];
 let isPlaying = false;
 let currentPlayingLabel: string | null = null;
@@ -91,6 +93,10 @@ function buildUIState(): DesktopUIState {
     lastSyncAt,
     clockOffsetMs,
     snapshot: store.snapshot,
+    hasLocalUnsyncedChanges: store.state.hasLocalUnsyncedChanges,
+    localBaseVersion: store.state.localBaseVersion,
+    localModifiedAt: store.state.localModifiedAt,
+    conflictingServerSnapshot,
     audioFiles,
     pendingLogCount: store.state.pendingLogs.length,
     recentLogs: store.state.recentLogs,
@@ -362,6 +368,156 @@ async function flushPendingLogs(): Promise<void> {
   }
 }
 
+async function pushLocalSnapshotToServer(force = false): Promise<{
+  synced: boolean;
+  conflict: boolean;
+  message: string;
+}> {
+  if (!store.snapshot) {
+    return { synced: false, conflict: false, message: 'Belum ada jadwal lokal.' };
+  }
+  if (!store.config.serverUrl || !store.config.deviceToken) {
+    return {
+      synced: false,
+      conflict: false,
+      message: 'Tersimpan lokal (Server VPS belum dikonfigurasi).'
+    };
+  }
+
+  const base = store.config.serverUrl.replace(/\/+$/, '');
+  const baseVersion = store.state.localBaseVersion ?? store.snapshot.version;
+
+  try {
+    const res = await fetch(`${base}/api/device/snapshot`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-device-token': store.config.deviceToken
+      },
+      body: JSON.stringify({
+        baseVersion,
+        force,
+        profiles: store.snapshot.profiles,
+        weeklyRules: store.snapshot.weeklyRules.map((r) => ({
+          dayOfWeek: r.dayOfWeek,
+          profileId: r.profileId
+        })),
+        dateOverrides: store.snapshot.dateOverrides,
+        shutdownSettings: {
+          enabled: store.snapshot.shutdownSettings.enabled,
+          time: store.snapshot.shutdownSettings.time,
+          daysOfWeek: store.snapshot.shutdownSettings.daysOfWeek,
+          graceSeconds: store.snapshot.shutdownSettings.graceSeconds
+        }
+      })
+    });
+
+    const data = (await res.json()) as {
+      snapshot?: ScheduleSnapshot;
+      serverSnapshot?: ScheduleSnapshot;
+      serverNowMs?: number;
+      error?: string;
+    };
+
+    if (res.status === 409 && data.serverSnapshot) {
+      conflictingServerSnapshot = data.serverSnapshot;
+      emitUIState();
+      return {
+        synced: false,
+        conflict: true,
+        message: data.error || 'Konflik: jadwal di server telah diubah oleh admin lain.'
+      };
+    }
+
+    if (!res.ok || !data.snapshot) {
+      return {
+        synced: false,
+        conflict: false,
+        message: data.error || `Gagal sinkron ke server (HTTP ${res.status})`
+      };
+    }
+
+    if (data.serverNowMs) {
+      clockOffsetMs = data.serverNowMs - Date.now();
+    }
+    conflictingServerSnapshot = null;
+    store.markSnapshotSynced(data.snapshot);
+    lastSyncAt = new Date().toISOString();
+    lastError = null;
+    emitUIState();
+    sendHeartbeat();
+    return {
+      synced: true,
+      conflict: false,
+      message: `Jadwal tersimpan & tersinkron ke server (v${data.snapshot.version}).`
+    };
+  } catch {
+    return {
+      synced: false,
+      conflict: false,
+      message: 'Tersimpan lokal (Offline). Akan disinkronkan saat koneksi server pulih.'
+    };
+  }
+}
+
+function applyIncomingServerSnapshot(serverSnap: ScheduleSnapshot): void {
+  if (!store.state.hasLocalUnsyncedChanges) {
+    conflictingServerSnapshot = null;
+    store.markSnapshotSynced(serverSnap);
+    lastSyncAt = new Date().toISOString();
+    lastError = null;
+    emitUIState();
+    sendHeartbeat();
+    return;
+  }
+
+  const baseVer = store.state.localBaseVersion ?? store.snapshot?.version ?? 0;
+  if (serverSnap.version === baseVer) {
+    // Server did not change while offline: safely push our offline edits
+    void pushLocalSnapshotToServer(false);
+    return;
+  }
+
+  // Both server and local PC changed while offline -> ask operator via UI banner
+  conflictingServerSnapshot = serverSnap;
+  emitUIState();
+}
+
+function createStarterSnapshot(): ScheduleSnapshot {
+  const now = new Date().toISOString();
+  const profileId = crypto.randomUUID();
+  return {
+    version: 0,
+    schoolName: 'SMK Negeri 1 Adiwerna',
+    timeZone: 'Asia/Jakarta',
+    profiles: [
+      {
+        id: profileId,
+        name: 'Jadwal Reguler (Lokal)',
+        description: 'Dibuat secara lokal di PC Bel',
+        color: '#2563eb',
+        slots: [],
+        createdAt: now,
+        updatedAt: now
+      }
+    ],
+    weeklyRules: [0, 1, 2, 3, 4, 5, 6].map((dayOfWeek) => ({
+      dayOfWeek,
+      profileId: dayOfWeek >= 1 && dayOfWeek <= 5 ? profileId : null,
+      updatedAt: now
+    })),
+    dateOverrides: [],
+    shutdownSettings: {
+      enabled: false,
+      time: '16:30',
+      daysOfWeek: [1, 2, 3, 4, 5],
+      graceSeconds: 20,
+      updatedAt: now
+    },
+    generatedAt: now
+  };
+}
+
 async function syncWithServerRest(): Promise<void> {
   if (!store.config.serverUrl || !store.config.deviceToken) return;
   try {
@@ -371,9 +527,7 @@ async function syncWithServerRest(): Promise<void> {
     );
     const rtt = Date.now() - reqStarted;
     clockOffsetMs = res.serverNowMs + Math.round(rtt / 2) - Date.now();
-    store.saveSnapshot(res.snapshot);
-    lastSyncAt = new Date().toISOString();
-    lastError = null;
+    applyIncomingServerSnapshot(res.snapshot);
     await flushPendingLogs();
     await syncServerAudioFiles();
     await postAudioManifestRest();
@@ -647,11 +801,7 @@ function connectSocket(): void {
     'schedule:updated',
     (payload: { snapshot: ScheduleSnapshot; serverNowMs: number }) => {
       clockOffsetMs = payload.serverNowMs - Date.now();
-      store.saveSnapshot(payload.snapshot);
-      lastSyncAt = new Date().toISOString();
-      lastError = null;
-      emitUIState();
-      sendHeartbeat();
+      applyIncomingServerSnapshot(payload.snapshot);
     }
   );
 
@@ -894,6 +1044,56 @@ function registerIpc(): void {
 
   ipcMain.handle('desktop:sync-now', async () => {
     refreshAudioFiles();
+    await syncWithServerRest();
+    return buildUIState();
+  });
+
+  ipcMain.handle('desktop:init-local-snapshot', () => {
+    if (!store.snapshot) {
+      store.saveLocalModifiedSnapshot(createStarterSnapshot());
+      emitUIState();
+    }
+    return buildUIState();
+  });
+
+  ipcMain.handle('desktop:save-local-snapshot', async (_ev, incoming: ScheduleSnapshot) => {
+    const normalized: ScheduleSnapshot = {
+      ...incoming,
+      profiles: incoming.profiles.map((p) => ({
+        ...p,
+        slots: sortSlots(p.slots),
+        updatedAt: new Date().toISOString()
+      })),
+      generatedAt: new Date().toISOString()
+    };
+    store.saveLocalModifiedSnapshot(normalized);
+    emitUIState();
+
+    const result = await pushLocalSnapshotToServer(false);
+    return {
+      state: buildUIState(),
+      ...result
+    };
+  });
+
+  ipcMain.handle('desktop:push-local-snapshot', async (_ev, force: boolean) => {
+    const result = await pushLocalSnapshotToServer(Boolean(force));
+    return {
+      state: buildUIState(),
+      ...result
+    };
+  });
+
+  ipcMain.handle('desktop:accept-server-snapshot', async () => {
+    if (conflictingServerSnapshot) {
+      const next = conflictingServerSnapshot;
+      conflictingServerSnapshot = null;
+      store.markSnapshotSynced(next);
+      emitUIState();
+      sendHeartbeat();
+      return buildUIState();
+    }
+    store.state.hasLocalUnsyncedChanges = false;
     await syncWithServerRest();
     return buildUIState();
   });

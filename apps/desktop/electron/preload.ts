@@ -1,11 +1,18 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AudioStep, ShutdownAction } from '@jadwal-adb/shared';
+import type { AudioStep, ScheduleSnapshot, ShutdownAction } from '@jadwal-adb/shared';
 import type {
   AudioPlayJob,
   AudioPlayResult,
   DesktopConfig,
   DesktopUIState
 } from './types.js';
+
+export interface SnapshotSaveResult {
+  state: DesktopUIState;
+  synced: boolean;
+  conflict: boolean;
+  message: string;
+}
 
 export interface DesktopBridge {
   getState: () => Promise<DesktopUIState>;
@@ -14,6 +21,10 @@ export interface DesktopBridge {
   openAudioDir: () => Promise<void>;
   rescanAudio: () => Promise<DesktopUIState>;
   syncNow: () => Promise<DesktopUIState>;
+  initLocalSnapshot: () => Promise<DesktopUIState>;
+  saveLocalSnapshot: (snapshot: ScheduleSnapshot) => Promise<SnapshotSaveResult>;
+  pushLocalSnapshot: (force: boolean) => Promise<SnapshotSaveResult>;
+  acceptServerSnapshot: () => Promise<DesktopUIState>;
   playTestSteps: (label: string, steps: AudioStep[]) => Promise<void>;
   stopAudio: () => Promise<void>;
   reportAudioStarted: (jobId: string, label: string) => void;
@@ -32,6 +43,10 @@ const bridge: DesktopBridge = {
   openAudioDir: () => ipcRenderer.invoke('desktop:open-audio-dir'),
   rescanAudio: () => ipcRenderer.invoke('desktop:rescan-audio'),
   syncNow: () => ipcRenderer.invoke('desktop:sync-now'),
+  initLocalSnapshot: () => ipcRenderer.invoke('desktop:init-local-snapshot'),
+  saveLocalSnapshot: (snapshot) => ipcRenderer.invoke('desktop:save-local-snapshot', snapshot),
+  pushLocalSnapshot: (force) => ipcRenderer.invoke('desktop:push-local-snapshot', force),
+  acceptServerSnapshot: () => ipcRenderer.invoke('desktop:accept-server-snapshot'),
   playTestSteps: (label, steps) => ipcRenderer.invoke('desktop:play-test', { label, steps }),
   stopAudio: () => ipcRenderer.invoke('desktop:stop-audio'),
   reportAudioStarted: (jobId, label) => ipcRenderer.send('audio:started', { jobId, label }),
