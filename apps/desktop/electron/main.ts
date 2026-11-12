@@ -26,6 +26,7 @@ import {
   type BellLogInput,
   type RemoteCommand,
   type ScheduleSnapshot,
+  type ServerAudioFile,
   type ShutdownAction,
   type ShutdownState
 } from '@jadwal-adb/shared';
@@ -237,6 +238,75 @@ async function fetchJson<T>(urlPath: string, init: RequestInit = {}): Promise<T>
   return (await res.json()) as T;
 }
 
+function sha256File(filePath: string): string {
+  const hash = crypto.createHash('sha256');
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest('hex');
+}
+
+async function downloadServerAudioFile(fileName: string, targetPath: string): Promise<void> {
+  const base = store.config.serverUrl.replace(/\/+$/, '');
+  const res = await fetch(
+    `${base}/api/device/server-audio/${encodeURIComponent(path.basename(fileName))}`,
+    {
+      headers: { 'x-device-token': store.config.deviceToken }
+    }
+  );
+  if (!res.ok) {
+    throw new Error(`Gagal mengunduh audio ${fileName}: HTTP ${res.status}`);
+  }
+  const arrayBuf = await res.arrayBuffer();
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  const tmpPath = `${targetPath}.tmp`;
+  fs.writeFileSync(tmpPath, Buffer.from(arrayBuf));
+  fs.renameSync(tmpPath, targetPath);
+}
+
+let syncingServerAudio = false;
+async function syncServerAudioFiles(serverFiles?: ServerAudioFile[]): Promise<void> {
+  if (!store.config.serverUrl || !store.config.deviceToken || !store.config.audioDir) return;
+  if (syncingServerAudio) return;
+  syncingServerAudio = true;
+
+  try {
+    const list =
+      serverFiles ??
+      (await fetchJson<{ files: ServerAudioFile[] }>('/api/device/server-audio')).files;
+
+    const webDir = path.join(store.config.audioDir, '_web');
+    fs.mkdirSync(webDir, { recursive: true });
+
+    let changed = false;
+    const expectedNames = new Set(list.map((f) => path.basename(f.fileName)));
+
+    for (const entry of list) {
+      const safeName = path.basename(entry.fileName);
+      const localPath = path.join(webDir, safeName);
+      const needsDownload = !fs.existsSync(localPath) || sha256File(localPath) !== entry.sha256;
+      if (needsDownload) {
+        await downloadServerAudioFile(safeName, localPath);
+        changed = true;
+      }
+    }
+
+    for (const existing of fs.readdirSync(webDir)) {
+      if (existing.endsWith('.tmp')) continue;
+      if (!expectedNames.has(existing)) {
+        fs.unlinkSync(path.join(webDir, existing));
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      refreshAudioFiles();
+    }
+  } catch {
+    // Keep offline copy intact if server is unreachable
+  } finally {
+    syncingServerAudio = false;
+  }
+}
+
 async function postAudioManifestRest(): Promise<void> {
   if (!store.config.serverUrl || !store.config.deviceToken) return;
   try {
@@ -305,6 +375,7 @@ async function syncWithServerRest(): Promise<void> {
     lastSyncAt = new Date().toISOString();
     lastError = null;
     await flushPendingLogs();
+    await syncServerAudioFiles();
     await postAudioManifestRest();
     emitUIState();
   } catch (err) {
@@ -331,8 +402,25 @@ function recordAndFlushLog(log: BellLogInput): void {
   void flushPendingLogs();
 }
 
-function dispatchPlayJob(job: Omit<AudioPlayJob, 'jobId'>): void {
+async function dispatchPlayJob(job: Omit<AudioPlayJob, 'jobId'>): Promise<void> {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  // Ensure any web-uploaded (_web/...) files are downloaded locally before playing
+  for (const step of job.steps) {
+    if (step.fileName.startsWith('_web/') && store.config.serverUrl && store.config.deviceToken) {
+      const safeName = path.basename(step.fileName);
+      const localPath = path.join(store.config.audioDir, '_web', safeName);
+      if (!fs.existsSync(localPath)) {
+        try {
+          await downloadServerAudioFile(safeName, localPath);
+          refreshAudioFiles();
+        } catch {
+          // Let renderer report missing_file if offline
+        }
+      }
+    }
+  }
+
   const fullJob: AudioPlayJob = {
     ...job,
     jobId: crypto.randomUUID()
@@ -485,7 +573,7 @@ function initiateShutdown(
 function handleRemoteCommand(cmd: RemoteCommand): void {
   switch (cmd.type) {
     case 'play_manual':
-      dispatchPlayJob({
+      void dispatchPlayJob({
         triggerType: 'manual',
         profileName: null,
         slotLabel: cmd.label,
@@ -570,6 +658,10 @@ function connectSocket(): void {
   socket.on('device:command', (cmd: RemoteCommand) => {
     handleRemoteCommand(cmd);
   });
+
+  socket.on('server_audio:updated', (files: ServerAudioFile[]) => {
+    void syncServerAudioFiles(files);
+  });
 }
 
 function runSchedulerTick(): void {
@@ -585,7 +677,7 @@ function runSchedulerTick(): void {
     const key = `${parts.dateStr}|${slot.id}|${slot.time}`;
     if (!store.hasPlayed(key)) {
       store.markPlayed(key, parts.dateStr);
-      dispatchPlayJob({
+      void dispatchPlayJob({
         triggerType: 'scheduled',
         profileName: resolved.profile?.name ?? null,
         slotLabel: slot.label,
@@ -762,6 +854,7 @@ function registerIpc(): void {
     if (patch.audioDir && patch.audioDir !== prevAudioDir) {
       setupAudioWatcher();
       refreshAudioFiles();
+      void syncServerAudioFiles();
     }
     if (patch.serverUrl !== prevServer || patch.deviceToken !== prevToken) {
       connectSocket();
@@ -784,6 +877,7 @@ function registerIpc(): void {
     store.updateConfig({ audioDir: selected });
     setupAudioWatcher();
     refreshAudioFiles();
+    void syncServerAudioFiles();
     return selected;
   });
 
@@ -807,7 +901,7 @@ function registerIpc(): void {
   ipcMain.handle(
     'desktop:play-test',
     (_ev, payload: { label: string; steps: AudioStep[] }) => {
-      dispatchPlayJob({
+      void dispatchPlayJob({
         triggerType: 'manual',
         profileName: null,
         slotLabel: payload.label,

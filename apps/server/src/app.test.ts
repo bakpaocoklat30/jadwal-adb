@@ -1,16 +1,20 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { io as ioClient } from 'socket.io-client';
 import { buildServerApp } from './app.js';
 import type { ServerConfig } from './config.js';
 
-function testConfig(): ServerConfig {
+function testConfig(uploadsDir: string): ServerConfig {
   return {
     port: 0,
     host: '127.0.0.1',
     timeZone: 'Asia/Jakarta',
     schoolName: 'SMK Negeri 1 Adiwerna',
     dbPath: ':memory:',
+    uploadsDir,
     jwtSecret: 'test-jwt-secret-key-min-32-chars-long',
     corsOrigin: true,
     initialDeviceToken: 'test-device-token',
@@ -19,7 +23,8 @@ function testConfig(): ServerConfig {
 }
 
 test('auth, role enforcement, schedule mutation, and device sync work end-to-end', async () => {
-  const { app } = await buildServerApp(testConfig());
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jadwal-adb-test-'));
+  const { app } = await buildServerApp(testConfig(tmpDir));
 
   try {
     // 1. Health check
@@ -110,11 +115,13 @@ test('auth, role enforcement, schedule mutation, and device sync work end-to-end
     assert.equal(offlineRemote.statusCode, 409);
   } finally {
     await app.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
 test('realtime Socket.IO device pairing, heartbeat, audio manifest, and remote commands work', async () => {
-  const { app } = await buildServerApp(testConfig());
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jadwal-adb-test-'));
+  const { app } = await buildServerApp(testConfig(tmpDir));
   const address = await app.listen({ port: 0, host: '127.0.0.1' });
 
   try {
@@ -215,5 +222,89 @@ test('realtime Socket.IO device pairing, heartbeat, audio manifest, and remote c
     deviceSocket.disconnect();
   } finally {
     await app.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('web audio upload, stream preview, device download, and deletion work', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jadwal-adb-test-'));
+  const { app } = await buildServerApp(testConfig(tmpDir));
+  const address = await app.listen({ port: 0, host: '127.0.0.1' });
+
+  try {
+    const piketLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'piket', password: 'piket123' }
+    });
+    const piketToken = piketLogin.json().token as string;
+
+    const wakaLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'waka', password: 'waka123' }
+    });
+    const wakaToken = wakaLogin.json().token as string;
+
+    // Upload MP3 via multipart FormData
+    const form = new FormData();
+    const fakeMp3 = new Blob([Buffer.from('ID3-fake-mp3-audio-bytes')], { type: 'audio/mpeg' });
+    form.append('file', fakeMp3, 'Pengumuman Lomba (Baru).mp3');
+
+    const uploadRes = await fetch(`${address}/api/audio/upload`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${piketToken}` },
+      body: form
+    });
+    assert.equal(uploadRes.status, 201);
+    const uploadJson = (await uploadRes.json()) as {
+      file: { fileName: string; relativePath: string };
+    };
+    assert.equal(uploadJson.file.fileName, 'Pengumuman_Lomba_Baru.mp3');
+    assert.equal(uploadJson.file.relativePath, '_web/Pengumuman_Lomba_Baru.mp3');
+
+    // Device can list & download it
+    const devListRes = await app.inject({
+      method: 'GET',
+      url: '/api/device/server-audio',
+      headers: { 'x-device-token': 'test-device-token' }
+    });
+    assert.equal(devListRes.statusCode, 200);
+    assert.equal(devListRes.json().files.length, 1);
+
+    const devDlRes = await app.inject({
+      method: 'GET',
+      url: '/api/device/server-audio/Pengumuman_Lomba_Baru.mp3',
+      headers: { 'x-device-token': 'test-device-token' }
+    });
+    assert.equal(devDlRes.statusCode, 200);
+    assert.equal(devDlRes.body, 'ID3-fake-mp3-audio-bytes');
+
+    // Web Admin can stream preview
+    const previewRes = await app.inject({
+      method: 'GET',
+      url: '/api/audio/server-files/Pengumuman_Lomba_Baru.mp3/stream',
+      headers: { authorization: `Bearer ${piketToken}` }
+    });
+    assert.equal(previewRes.statusCode, 200);
+
+    // Piket cannot delete server audio (403), Waka can (200)
+    const piketDel = await app.inject({
+      method: 'DELETE',
+      url: '/api/audio/server-files/Pengumuman_Lomba_Baru.mp3',
+      headers: { authorization: `Bearer ${piketToken}` }
+    });
+    assert.equal(piketDel.statusCode, 403);
+
+    const wakaDel = await app.inject({
+      method: 'DELETE',
+      url: '/api/audio/server-files/Pengumuman_Lomba_Baru.mp3',
+      headers: { authorization: `Bearer ${wakaToken}` }
+    });
+    assert.equal(wakaDel.statusCode, 200);
+    assert.equal(wakaDel.json().files.length, 0);
+  } finally {
+    await app.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });

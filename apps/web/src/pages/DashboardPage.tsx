@@ -18,6 +18,7 @@ import {
   type BellLog,
   type DeviceStatus,
   type ScheduleSnapshot,
+  type ServerAudioFile,
   type ShutdownAction
 } from '@jadwal-adb/shared';
 import { RemoteControlPanel } from '../components/RemoteControlPanel.js';
@@ -26,10 +27,12 @@ interface DashboardPageProps {
   snapshot: ScheduleSnapshot;
   status: DeviceStatus;
   audioFiles: AudioFileEntry[];
+  serverAudioFiles: ServerAudioFile[];
   logs: BellLog[];
   serverTimeOffsetMs: number;
   onSetTodayOverride: (profileId: string | null, note: string) => Promise<void>;
   onDeleteOverride: (id: string) => Promise<void>;
+  onUploadAudio: (file: File) => Promise<ServerAudioFile>;
   onPlayManual: (label: string, steps: AudioStep[]) => Promise<void>;
   onStopAudio: () => Promise<void>;
   onShutdownPc: (action: ShutdownAction, graceSeconds: number, reason: string) => Promise<void>;
@@ -49,10 +52,12 @@ export function DashboardPage({
   snapshot,
   status,
   audioFiles,
+  serverAudioFiles,
   logs,
   serverTimeOffsetMs,
   onSetTodayOverride,
   onDeleteOverride,
+  onUploadAudio,
   onPlayManual,
   onStopAudio,
   onShutdownPc
@@ -367,6 +372,8 @@ export function DashboardPage({
         <RemoteControlPanel
           status={status}
           audioFiles={audioFiles}
+          serverAudioFiles={serverAudioFiles}
+          onUploadAudio={onUploadAudio}
           onPlayManual={onPlayManual}
           onStopAudio={onStopAudio}
           onShutdownPc={onShutdownPc}

@@ -1,3 +1,4 @@
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -10,6 +11,7 @@ export interface ServerConfig {
   timeZone: string;
   schoolName: string;
   dbPath: string;
+  uploadsDir: string;
   jwtSecret: string | null;
   corsOrigin: string | string[] | boolean;
   initialDeviceToken: string | null;
@@ -23,6 +25,14 @@ export function loadConfig(): ServerConfig {
   const schoolName = process.env.SCHOOL_NAME || 'SMK Negeri 1 Adiwerna';
   const dbPathRaw = process.env.DB_PATH || path.join(rootDir, 'data', 'jadwal-adb.db');
   const dbPath = path.isAbsolute(dbPathRaw) ? dbPathRaw : path.resolve(rootDir, dbPathRaw);
+  const uploadsDirRaw =
+    process.env.UPLOADS_DIR ||
+    (dbPath === ':memory:'
+      ? path.join(os.tmpdir(), 'jadwal-adb-uploads')
+      : path.join(path.dirname(dbPath), 'uploads'));
+  const uploadsDir = path.isAbsolute(uploadsDirRaw)
+    ? uploadsDirRaw
+    : path.resolve(rootDir, uploadsDirRaw);
   const corsRaw = process.env.CORS_ORIGIN || '*';
   const corsOrigin = corsRaw === '*' ? true : corsRaw.split(',').map((s) => s.trim());
 
@@ -32,6 +42,7 @@ export function loadConfig(): ServerConfig {
     timeZone,
     schoolName,
     dbPath,
+    uploadsDir,
     jwtSecret: process.env.JWT_SECRET?.trim() || null,
     corsOrigin,
     initialDeviceToken: process.env.INITIAL_DEVICE_TOKEN?.trim() || null,

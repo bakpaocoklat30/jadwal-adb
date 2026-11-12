@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import cors from '@fastify/cors';
+import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { ServerConfig } from './config.js';
 import { AppDatabase } from './db.js';
+import { registerAudioRoutes } from './routes/audio.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerDeviceRoutes } from './routes/device.js';
 import { registerRemoteRoutes } from './routes/remote.js';
@@ -23,6 +25,13 @@ export async function buildServerApp(config: ServerConfig): Promise<BuiltApp> {
   await app.register(cors, {
     origin: config.corsOrigin,
     credentials: true
+  });
+
+  await app.register(multipart, {
+    limits: {
+      fileSize: 30 * 1024 * 1024,
+      files: 1
+    }
   });
 
   const db = new AppDatabase(config.dbPath, {
@@ -47,6 +56,7 @@ export async function buildServerApp(config: ServerConfig): Promise<BuiltApp> {
   });
 
   registerAuthRoutes(app, db);
+  registerAudioRoutes(app, db, hub, config.uploadsDir);
   registerScheduleRoutes(app, db, hub);
   registerDeviceRoutes(app, db, hub);
   registerRemoteRoutes(app, db, hub);

@@ -71,6 +71,7 @@ export class RealtimeHub {
         snapshot: this.db.getScheduleSnapshot(),
         serverNowMs: Date.now()
       });
+      socket.emit('server_audio:updated', this.db.listServerAudioFiles());
       this.broadcastDeviceStatus();
 
       socket.on('device:heartbeat', (raw, ack) => {
@@ -178,6 +179,10 @@ export class RealtimeHub {
 
   public broadcastAudioManifest(): void {
     this.io.to('admins').emit('audio:updated', this.db.getAudioManifest());
+  }
+
+  public broadcastServerAudioUpdated(): void {
+    this.io.to('device').to('admins').emit('server_audio:updated', this.db.listServerAudioFiles());
   }
 
   public broadcastLogsUpdated(): void {

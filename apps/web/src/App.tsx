@@ -7,6 +7,7 @@ import type {
   ScheduleProfile,
   ScheduleSlot,
   ScheduleSnapshot,
+  ServerAudioFile,
   ShutdownAction,
   ShutdownSettings,
   UserPublic
@@ -34,6 +35,7 @@ export function App() {
   const [snapshot, setSnapshot] = useState<ScheduleSnapshot | null>(null);
   const [deviceStatus, setDeviceStatus] = useState<DeviceStatus | null>(null);
   const [audioFiles, setAudioFiles] = useState<AudioFileEntry[]>([]);
+  const [serverAudioFiles, setServerAudioFiles] = useState<ServerAudioFile[]>([]);
   const [logs, setLogs] = useState<BellLog[]>([]);
   const [serverTimeOffsetMs, setServerTimeOffsetMs] = useState(0);
   const [toast, setToast] = useState<{ text: string; type: 'ok' | 'err' } | null>(null);
@@ -46,10 +48,15 @@ export function App() {
   }, []);
 
   const loadAll = useCallback(async () => {
-    const [snapRes, devRes] = await Promise.all([api.getSnapshot(), api.getDeviceState()]);
+    const [snapRes, devRes, srvAudioRes] = await Promise.all([
+      api.getSnapshot(),
+      api.getDeviceState(),
+      api.listServerAudio()
+    ]);
     setSnapshot(snapRes.snapshot);
     setDeviceStatus(devRes.status);
     setAudioFiles(devRes.audioFiles);
+    setServerAudioFiles(srvAudioRes.files);
     setLogs(devRes.logs);
     setServerTimeOffsetMs(snapRes.serverNowMs - Date.now());
   }, []);
@@ -90,6 +97,9 @@ export function App() {
     });
     socket.on('audio:updated', (files: AudioFileEntry[]) => {
       setAudioFiles(files);
+    });
+    socket.on('server_audio:updated', (files: ServerAudioFile[]) => {
+      setServerAudioFiles(files);
     });
     socket.on('logs:updated', (nextLogs: BellLog[]) => {
       setLogs(nextLogs);
@@ -180,8 +190,18 @@ export function App() {
           snapshot={snapshot}
           status={deviceStatus}
           audioFiles={audioFiles}
+          serverAudioFiles={serverAudioFiles}
           logs={logs}
           serverTimeOffsetMs={serverTimeOffsetMs}
+          onUploadAudio={async (file) => {
+            let uploaded!: ServerAudioFile;
+            await runAction(async () => {
+              const res = await api.uploadAudioFile(file);
+              uploaded = res.file;
+              setServerAudioFiles(res.files);
+            }, `File "${file.name}" berhasil diupload ke server`);
+            return uploaded;
+          }}
           onSetTodayOverride={(profileId, note) =>
             runAction(async () => {
               const res = await api.setTodayOverride({ profileId, note });
@@ -283,9 +303,26 @@ export function App() {
 
       {activeTab === 'audio' && (
         <AudioFilesPage
+          userRole={user.role}
           status={deviceStatus}
           audioFiles={audioFiles}
+          serverAudioFiles={serverAudioFiles}
           snapshot={snapshot}
+          onUploadAudio={async (file) => {
+            let uploaded!: ServerAudioFile;
+            await runAction(async () => {
+              const res = await api.uploadAudioFile(file);
+              uploaded = res.file;
+              setServerAudioFiles(res.files);
+            }, `File "${file.name}" berhasil diupload ke server`);
+            return uploaded;
+          }}
+          onDeleteServerAudio={(fileName) =>
+            runAction(async () => {
+              const res = await api.deleteServerAudio(fileName);
+              setServerAudioFiles(res.files);
+            }, `File "${fileName}" dihapus dari server`)
+          }
           onPlayManual={(label, steps) =>
             runAction(async () => {
               await api.playManual(label, steps);

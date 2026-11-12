@@ -5,12 +5,16 @@ import {
   type AudioFileEntry,
   type AudioStep,
   type DeviceStatus,
+  type ServerAudioFile,
   type ShutdownAction
 } from '@jadwal-adb/shared';
+import { UploadAudioCard } from './UploadAudioCard.js';
 
 interface RemoteControlPanelProps {
   status: DeviceStatus;
   audioFiles: AudioFileEntry[];
+  serverAudioFiles: ServerAudioFile[];
+  onUploadAudio: (file: File) => Promise<ServerAudioFile>;
   onPlayManual: (label: string, steps: AudioStep[]) => Promise<void>;
   onStopAudio: () => Promise<void>;
   onShutdownPc: (action: ShutdownAction, graceSeconds: number, reason: string) => Promise<void>;
@@ -19,6 +23,8 @@ interface RemoteControlPanelProps {
 export function RemoteControlPanel({
   status,
   audioFiles,
+  serverAudioFiles,
+  onUploadAudio,
   onPlayManual,
   onStopAudio,
   onShutdownPc
@@ -182,8 +188,13 @@ export function RemoteControlPanel({
             ))}
 
             <datalist id="remote-audio-files">
-              {audioFiles.map((file) => (
-                <option key={file.relativePath} value={file.relativePath} />
+              {Array.from(
+                new Set([
+                  ...audioFiles.map((f) => f.relativePath),
+                  ...serverAudioFiles.map((f) => f.relativePath)
+                ])
+              ).map((relPath) => (
+                <option key={relPath} value={relPath} />
               ))}
             </datalist>
           </div>
@@ -199,6 +210,12 @@ export function RemoteControlPanel({
           </button>
         </div>
       </div>
+
+      <UploadAudioCard
+        status={status}
+        onUploadAudio={onUploadAudio}
+        onPlayManual={onPlayManual}
+      />
 
       {/* Remote Power Control */}
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">

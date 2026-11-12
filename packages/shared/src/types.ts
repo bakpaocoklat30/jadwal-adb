@@ -78,6 +78,16 @@ export interface AudioFileEntry {
   updatedAt: string;
 }
 
+export interface ServerAudioFile {
+  id: string;
+  fileName: string;
+  relativePath: string;
+  sizeBytes: number;
+  sha256: string;
+  uploadedBy: string;
+  uploadedAt: string;
+}
+
 export type ShutdownState = 'idle' | 'pending' | 'shutting_down';
 export type ShutdownAction = 'shutdown' | 'restart';
 

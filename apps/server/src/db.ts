@@ -11,6 +11,7 @@ import type {
   ScheduleProfile,
   ScheduleSlot,
   ScheduleSnapshot,
+  ServerAudioFile,
   ShutdownSettings,
   UserPublic,
   UserRole,
@@ -157,6 +158,16 @@ export class AppDatabase {
         files_json TEXT NOT NULL,
         actor_name TEXT NULL,
         detail TEXT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS uploaded_audio (
+        id TEXT PRIMARY KEY,
+        file_name TEXT UNIQUE NOT NULL,
+        relative_path TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        uploaded_by TEXT NOT NULL,
+        uploaded_at TEXT NOT NULL
       );
 
       CREATE INDEX IF NOT EXISTS idx_bell_logs_occurred_at ON bell_logs (occurred_at DESC);
@@ -801,5 +812,67 @@ export class AppDatabase {
       actorName: r.actor_name ? String(r.actor_name) : null,
       detail: r.detail ? String(r.detail) : null
     }));
+  }
+
+  // --- Server Uploaded Audio ---
+  public listServerAudioFiles(): ServerAudioFile[] {
+    const rows = this.sqlite
+      .prepare('SELECT * FROM uploaded_audio ORDER BY uploaded_at DESC')
+      .all() as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: String(r.id),
+      fileName: String(r.file_name),
+      relativePath: String(r.relative_path),
+      sizeBytes: Number(r.size_bytes),
+      sha256: String(r.sha256),
+      uploadedBy: String(r.uploaded_by),
+      uploadedAt: String(r.uploaded_at)
+    }));
+  }
+
+  public getServerAudioFile(fileName: string): ServerAudioFile | null {
+    const row = this.sqlite
+      .prepare('SELECT * FROM uploaded_audio WHERE file_name = ?')
+      .get(fileName) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      fileName: String(row.file_name),
+      relativePath: String(row.relative_path),
+      sizeBytes: Number(row.size_bytes),
+      sha256: String(row.sha256),
+      uploadedBy: String(row.uploaded_by),
+      uploadedAt: String(row.uploaded_at)
+    };
+  }
+
+  public upsertServerAudioFile(input: {
+    fileName: string;
+    sizeBytes: number;
+    sha256: string;
+    uploadedBy: string;
+  }): ServerAudioFile {
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const relativePath = `_web/${input.fileName}`;
+    this.sqlite
+      .prepare(
+        `INSERT INTO uploaded_audio (id, file_name, relative_path, size_bytes, sha256, uploaded_by, uploaded_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(file_name) DO UPDATE SET
+           size_bytes = excluded.size_bytes,
+           sha256 = excluded.sha256,
+           uploaded_by = excluded.uploaded_by,
+           uploaded_at = excluded.uploaded_at`
+      )
+      .run(id, input.fileName, relativePath, input.sizeBytes, input.sha256, input.uploadedBy, now);
+    return this.getServerAudioFile(input.fileName)!;
+  }
+
+  public deleteServerAudioFile(fileName: string): boolean {
+    const res = this.sqlite
+      .prepare('DELETE FROM uploaded_audio WHERE file_name = ?')
+      .run(fileName);
+    return res.changes > 0;
   }
 }

@@ -7,6 +7,7 @@ import type {
   GenerateScheduleInput,
   ScheduleProfile,
   ScheduleSnapshot,
+  ServerAudioFile,
   ShutdownAction,
   ShutdownSettings,
   UserPublic,
@@ -225,6 +226,53 @@ export const api = {
     return request<{ ok: boolean }>(`/api/users/${id}`, {
       method: 'DELETE'
     });
+  },
+  listServerAudio() {
+    return request<{ files: ServerAudioFile[] }>('/api/audio/server-files');
+  },
+  async uploadAudioFile(file: File): Promise<{ file: ServerAudioFile; files: ServerAudioFile[] }> {
+    const token = getStoredToken();
+    const form = new FormData();
+    form.append('file', file);
+    const headers = new Headers();
+    if (token) {
+      headers.set('Authorization', `Bearer ${token}`);
+    }
+    const res = await fetch('/api/audio/upload', {
+      method: 'POST',
+      headers,
+      body: form
+    });
+    const text = await res.text();
+    const data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+    if (!res.ok) {
+      throw new ApiError(
+        typeof data.error === 'string' ? data.error : `Upload gagal (${res.status})`,
+        res.status
+      );
+    }
+    return data as { file: ServerAudioFile; files: ServerAudioFile[] };
+  },
+  deleteServerAudio(fileName: string) {
+    return request<{ ok: boolean; files: ServerAudioFile[] }>(
+      `/api/audio/server-files/${encodeURIComponent(fileName)}`,
+      { method: 'DELETE' }
+    );
+  },
+  async fetchServerAudioBlobUrl(fileName: string): Promise<string> {
+    const token = getStoredToken();
+    const headers = new Headers();
+    if (token) {
+      headers.set('Authorization', `Bearer ${token}`);
+    }
+    const res = await fetch(`/api/audio/server-files/${encodeURIComponent(fileName)}/stream`, {
+      headers
+    });
+    if (!res.ok) {
+      throw new ApiError('Gagal memuat pratinjau audio', res.status);
+    }
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
   }
 };
 
