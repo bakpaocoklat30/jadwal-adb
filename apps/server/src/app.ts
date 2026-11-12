@@ -24,6 +24,14 @@ export interface BuiltApp {
 export async function buildServerApp(config: ServerConfig): Promise<BuiltApp> {
   const app = Fastify({ logger: false });
 
+  app.addHook('onSend', async (_request, reply, payload) => {
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('X-Frame-Options', 'DENY');
+    reply.header('Referrer-Policy', 'same-origin');
+    reply.header('Permissions-Policy', 'camera=(), geolocation=()');
+    return payload;
+  });
+
   await app.register(cors, {
     origin: config.corsOrigin,
     credentials: true

@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import { playManualSchema, remoteShutdownSchema } from '@jadwal-adb/shared';
 import { requireAuth } from '../auth.js';
 import type { AppDatabase } from '../db.js';
+import { ActionCooldown } from '../security.js';
 import type { RealtimeHub } from '../socket.js';
 
 const ANNOUNCEMENT_EXTENSIONS = new Set(['.m4a', '.mp3', '.wav', '.ogg', '.aac', '.webm', '.3gp']);
@@ -35,12 +36,15 @@ export function registerRemoteRoutes(
   uploadsDir: string
 ): void {
   const ensureConnected = () => hub.isDeviceConnected();
+  const manualCooldown = new ActionCooldown(1200);
+  const chimeCooldown = new ActionCooldown(1200);
+  const announceCooldown = new ActionCooldown(1200);
   const announcementsDir = path.join(uploadsDir, '_announcements');
   fs.mkdirSync(announcementsDir, { recursive: true });
 
   app.post(
     '/api/remote/play-manual',
-    { preHandler: requireAuth(db, ['admin', 'waka', 'piket']) },
+    { preHandler: requireAuth(db, ['admin', 'waka', 'piket'], { requireChangedPassword: true }) },
     async (request, reply) => {
       const parsed = playManualSchema.safeParse(request.body);
       if (!parsed.success) {
@@ -48,6 +52,9 @@ export function registerRemoteRoutes(
       }
       if (!ensureConnected()) {
         return reply.code(409).send({ error: 'PC Bel sedang offline / tidak terhubung ke server' });
+      }
+      if (!manualCooldown.tryAcquire(request.authUser!.id)) {
+        return reply.code(429).send({ error: 'Terlalu cepat mengirim perintah audio. Tunggu sebentar.' });
       }
 
       const commandId = crypto.randomUUID();
@@ -101,7 +108,7 @@ export function registerRemoteRoutes(
 
   app.post(
     '/api/remote/shutdown',
-    { preHandler: requireAuth(db, ['admin', 'waka', 'piket']) },
+    { preHandler: requireAuth(db, ['admin', 'waka'], { requireChangedPassword: true }) },
     async (request, reply) => {
       const parsed = remoteShutdownSchema.safeParse(request.body);
       if (!parsed.success) {
@@ -126,7 +133,7 @@ export function registerRemoteRoutes(
 
   app.post(
     '/api/remote/cancel-shutdown',
-    { preHandler: requireAuth(db, ['admin', 'waka', 'piket']) },
+    { preHandler: requireAuth(db, ['admin', 'waka']) },
     async (request, reply) => {
       if (!ensureConnected()) {
         return reply.code(409).send({ error: 'PC Bel sedang offline / tidak terhubung ke server' });
@@ -144,16 +151,19 @@ export function registerRemoteRoutes(
 
   app.post(
     '/api/remote/play-chime',
-    { preHandler: requireAuth(db, ['admin', 'waka', 'piket']) },
-    async (_request, reply) => {
+    { preHandler: requireAuth(db, ['admin', 'waka'], { requireChangedPassword: true }) },
+    async (request, reply) => {
       if (!ensureConnected()) {
         return reply.code(409).send({ error: 'PC Bel sedang offline / tidak terhubung ke server' });
+      }
+      if (!chimeCooldown.tryAcquire(request.authUser!.id)) {
+        return reply.code(429).send({ error: 'Terlalu cepat menekan Ting-Tong. Tunggu sebentar.' });
       }
       const commandId = crypto.randomUUID();
       hub.sendCommandToDevice({
         type: 'play_chime',
         commandId,
-        requestedBy: _request.authUser!.displayName
+        requestedBy: request.authUser!.displayName
       });
       return { ok: true, commandId };
     }
@@ -161,10 +171,13 @@ export function registerRemoteRoutes(
 
   app.post(
     '/api/remote/announce-voice-note',
-    { preHandler: requireAuth(db, ['admin', 'waka', 'piket']) },
+    { preHandler: requireAuth(db, ['admin', 'waka'], { requireChangedPassword: true }) },
     async (request, reply) => {
       if (!ensureConnected()) {
         return reply.code(409).send({ error: 'PC Bel sedang offline / tidak terhubung ke server' });
+      }
+      if (!announceCooldown.tryAcquire(request.authUser!.id)) {
+        return reply.code(429).send({ error: 'Terlalu cepat mengirim pengumuman. Tunggu sebentar.' });
       }
 
       let filePart;

@@ -2,6 +2,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { SignJWT, jwtVerify } from 'jose';
 import type { UserPublic, UserRole } from '@jadwal-adb/shared';
 import type { AppDatabase } from './db.js';
+import { safeTokenEquals } from './security.js';
 
 export interface AuthTokenPayload {
   sub: string;
@@ -51,7 +52,15 @@ export async function verifyUserToken(
   }
 }
 
-export function requireAuth(db: AppDatabase, allowedRoles?: UserRole[]) {
+export interface RequireAuthOptions {
+  requireChangedPassword?: boolean;
+}
+
+export function requireAuth(
+  db: AppDatabase,
+  allowedRoles?: UserRole[],
+  options: RequireAuthOptions = {}
+) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     const authHeader = request.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -74,6 +83,13 @@ export function requireAuth(db: AppDatabase, allowedRoles?: UserRole[]) {
       return reply.code(403).send({ error: 'Anda tidak memiliki hak akses untuk tindakan ini' });
     }
 
+    if (options.requireChangedPassword && publicUser.mustChangePassword) {
+      return reply.code(403).send({
+        error:
+          'Demi keamanan, Anda wajib mengganti password bawaan di menu Pengaturan sebelum melakukan aksi ini'
+      });
+    }
+
     request.authUser = publicUser;
   };
 }
@@ -81,7 +97,7 @@ export function requireAuth(db: AppDatabase, allowedRoles?: UserRole[]) {
 export function requireDeviceToken(db: AppDatabase) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     const token = request.headers['x-device-token'];
-    if (typeof token !== 'string' || token !== db.getDeviceToken()) {
+    if (typeof token !== 'string' || !safeTokenEquals(token, db.getDeviceToken())) {
       return reply.code(401).send({ error: 'Device token tidak valid' });
     }
   };

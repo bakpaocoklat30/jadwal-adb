@@ -146,6 +146,30 @@ fun DashboardScreen(
             }
         }
 
+        // Default password security warning
+        if (state.user?.mustChangePassword == true) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = AmberContainer),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Warning, contentDescription = null, tint = AmberWarn)
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Anda masih memakai password bawaan. Segera ubah password di tab Setelan agar kontrol audio PC Bel terbuka.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SlateText
+                        )
+                    }
+                }
+            }
+        }
+
         // PC Bel Status Card
         item {
             SectionCard(
@@ -188,15 +212,17 @@ fun DashboardScreen(
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("Sync PC Bel")
                     }
-                    OutlinedButton(
-                        onClick = { showShutdownDialog = true },
-                        enabled = device.online && !state.isBusy,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = RedDanger)
-                    ) {
-                        Icon(Icons.Default.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Matikan PC")
+                    if (state.user?.role == "admin" || state.user?.role == "waka") {
+                        OutlinedButton(
+                            onClick = { showShutdownDialog = true },
+                            enabled = device.online && !state.isBusy,
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = RedDanger)
+                        ) {
+                            Icon(Icons.Default.PowerSettingsNew, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Matikan PC")
+                        }
                     }
                 }
             }

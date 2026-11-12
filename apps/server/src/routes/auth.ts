@@ -7,19 +7,34 @@ import {
 } from '@jadwal-adb/shared';
 import { requireAuth, signUserToken } from '../auth.js';
 import { verifyPassword, type AppDatabase } from '../db.js';
+import { LoginRateLimiter } from '../security.js';
 
 export function registerAuthRoutes(app: FastifyInstance, db: AppDatabase): void {
+  const rateLimiter = new LoginRateLimiter();
+
   app.post('/api/auth/login', async (request, reply) => {
     const parsed = loginSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: parsed.error.issues[0]?.message || 'Data tidak valid' });
     }
 
-    const userRow = db.findUserByUsername(parsed.data.username.trim());
+    const username = parsed.data.username.trim();
+    const clientIp = request.ip || 'unknown';
+    const waitMs = rateLimiter.checkBlocked(clientIp, username);
+    if (waitMs > 0) {
+      const waitMinutes = Math.max(1, Math.ceil(waitMs / 60_000));
+      return reply.code(429).send({
+        error: `Terlalu banyak percobaan login gagal. Coba lagi dalam ${waitMinutes} menit.`
+      });
+    }
+
+    const userRow = db.findUserByUsername(username);
     if (!userRow || !userRow.active || !verifyPassword(parsed.data.password, userRow.passwordHash)) {
+      rateLimiter.recordFailure(clientIp, username);
       return reply.code(401).send({ error: 'Username atau password salah' });
     }
 
+    rateLimiter.recordSuccess(clientIp, username);
     const user = db.toPublicUser(userRow);
     const token = await signUserToken(user, db.getJwtSecret());
     return { token, user };

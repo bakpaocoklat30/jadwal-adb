@@ -106,11 +106,17 @@ test('auth, role enforcement, schedule mutation, and device sync work end-to-end
     assert.equal(goodSync.statusCode, 200);
     assert.equal(goodSync.json().snapshot.version, 3);
 
-    // 7. Remote play returns 409 when PC bell is offline
+    // 7. Remote shutdown returns 409 when PC bell is offline (after admin changes default password)
+    await app.inject({
+      method: 'POST',
+      url: '/api/auth/change-password',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { currentPassword: 'admin123', newPassword: 'admin-secure-password' }
+    });
     const offlineRemote = await app.inject({
       method: 'POST',
       url: '/api/remote/shutdown',
-      headers: { authorization: `Bearer ${piketToken}` },
+      headers: { authorization: `Bearer ${adminToken}` },
       payload: { action: 'shutdown', graceSeconds: 20, reason: 'Pulang' }
     });
     assert.equal(offlineRemote.statusCode, 409);
@@ -133,6 +139,14 @@ test('realtime Socket.IO device pairing, heartbeat, audio manifest, and remote c
     });
     assert.equal(loginRes.statusCode, 200);
     const wakaToken = loginRes.json().token as string;
+
+    const changePwRes = await app.inject({
+      method: 'POST',
+      url: '/api/auth/change-password',
+      headers: { authorization: `Bearer ${wakaToken}` },
+      payload: { currentPassword: 'waka123', newPassword: 'waka-secure-password' }
+    });
+    assert.equal(changePwRes.statusCode, 200);
 
     const deviceSocket = ioClient(address, {
       auth: { kind: 'device', deviceToken: 'test-device-token' },
@@ -240,12 +254,27 @@ test('web audio upload, stream preview, device download, and deletion work', asy
     });
     const piketToken = piketLogin.json().token as string;
 
+    const piketChangePw = await app.inject({
+      method: 'POST',
+      url: '/api/auth/change-password',
+      headers: { authorization: `Bearer ${piketToken}` },
+      payload: { currentPassword: 'piket123', newPassword: 'piket-secure-password' }
+    });
+    assert.equal(piketChangePw.statusCode, 200);
+
     const wakaLogin = await app.inject({
       method: 'POST',
       url: '/api/auth/login',
       payload: { username: 'waka', password: 'waka123' }
     });
     const wakaToken = wakaLogin.json().token as string;
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/auth/change-password',
+      headers: { authorization: `Bearer ${wakaToken}` },
+      payload: { currentPassword: 'waka123', newPassword: 'waka-secure-password' }
+    });
 
     // Upload MP3 via multipart FormData
     const form = new FormData();
@@ -446,6 +475,13 @@ test('manual DB backup, auto-backup settings, download, delete, and JSON schedul
     });
     const wakaToken = wakaLogin.json().token as string;
 
+    await app.inject({
+      method: 'POST',
+      url: '/api/auth/change-password',
+      headers: { authorization: `Bearer ${wakaToken}` },
+      payload: { currentPassword: 'waka123', newPassword: 'waka-secure-password' }
+    });
+
     // 1. Waka cannot access full .db backup settings (403)
     const wakaBackupList = await app.inject({
       method: 'GET',
@@ -546,6 +582,13 @@ test('announcement chime, voice note upload, and realtime live mic Socket.IO rel
     });
     const wakaToken = wakaLogin.json().token as string;
 
+    await app.inject({
+      method: 'POST',
+      url: '/api/auth/change-password',
+      headers: { authorization: `Bearer ${wakaToken}` },
+      payload: { currentPassword: 'waka123', newPassword: 'waka-secure-password' }
+    });
+
     const deviceSocket = ioClient(address, {
       auth: { kind: 'device', deviceToken: 'test-device-token' },
       transports: ['websocket']
@@ -644,6 +687,128 @@ test('announcement chime, voice note upload, and realtime live mic Socket.IO rel
     assert.equal(stopped.sessionId, ack.sessionId);
 
     userSocket.disconnect();
+    deviceSocket.disconnect();
+  } finally {
+    await app.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('security hardening: login rate limit, default-password enforcement, role guard, cooldown, and live-mic lock', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jadwal-adb-test-'));
+  const { app } = await buildServerApp(testConfig(tmpDir));
+  const address = await app.listen({ port: 0, host: '127.0.0.1' });
+
+  try {
+    // 1. Brute-force login rate limit (5 failed attempts -> 6th returns 429)
+    for (let i = 0; i < 5; i++) {
+      const bad = await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        payload: { username: 'admin', password: `wrong-${i}` }
+      });
+      assert.equal(bad.statusCode, 401);
+    }
+    const blocked = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'admin', password: 'wrong-again' }
+    });
+    assert.equal(blocked.statusCode, 429);
+
+    // Verify security headers are present
+    assert.equal(blocked.headers['x-content-type-options'], 'nosniff');
+    assert.equal(blocked.headers['x-frame-options'], 'DENY');
+
+    // Connect device socket
+    const deviceSocket = ioClient(address, {
+      auth: { kind: 'device', deviceToken: 'test-device-token' },
+      transports: ['websocket']
+    });
+    await new Promise<void>((resolve, reject) => {
+      deviceSocket.on('connect', () => resolve());
+      deviceSocket.on('connect_error', reject);
+    });
+
+    // 2. User with default password cannot trigger remote audio or Live Mic until password is changed
+    const wakaLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'waka', password: 'waka123' }
+    });
+    const wakaToken = wakaLogin.json().token as string;
+
+    const blockedChime = await app.inject({
+      method: 'POST',
+      url: '/api/remote/play-chime',
+      headers: { authorization: `Bearer ${wakaToken}` }
+    });
+    assert.equal(blockedChime.statusCode, 403);
+
+    const wakaSocket = ioClient(address, {
+      auth: { kind: 'user', token: wakaToken },
+      transports: ['websocket']
+    });
+    await new Promise<void>((resolve) => wakaSocket.on('connect', () => resolve()));
+
+    const blockedLive = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+      wakaSocket.emit('announce:live_start', { withChime: true }, resolve);
+    });
+    assert.equal(blockedLive.ok, false);
+
+    // 3. After changing password, Waka can trigger chime, and rapid repeat triggers 429 cooldown
+    const pwRes = await app.inject({
+      method: 'POST',
+      url: '/api/auth/change-password',
+      headers: { authorization: `Bearer ${wakaToken}` },
+      payload: { currentPassword: 'waka123', newPassword: 'waka-strong-password' }
+    });
+    assert.equal(pwRes.statusCode, 200);
+
+    const chime1 = await app.inject({
+      method: 'POST',
+      url: '/api/remote/play-chime',
+      headers: { authorization: `Bearer ${wakaToken}` }
+    });
+    assert.equal(chime1.statusCode, 200);
+
+    const chimeSpam = await app.inject({
+      method: 'POST',
+      url: '/api/remote/play-chime',
+      headers: { authorization: `Bearer ${wakaToken}` }
+    });
+    assert.equal(chimeSpam.statusCode, 429);
+
+    // 4. Piket cannot shutdown PC or play announcements even after changing password
+    const piketLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { username: 'piket', password: 'piket123' }
+    });
+    const piketToken = piketLogin.json().token as string;
+    await app.inject({
+      method: 'POST',
+      url: '/api/auth/change-password',
+      headers: { authorization: `Bearer ${piketToken}` },
+      payload: { currentPassword: 'piket123', newPassword: 'piket-strong-password' }
+    });
+
+    const piketShutdown = await app.inject({
+      method: 'POST',
+      url: '/api/remote/shutdown',
+      headers: { authorization: `Bearer ${piketToken}` },
+      payload: { action: 'shutdown', graceSeconds: 20, reason: 'Unauthorized' }
+    });
+    assert.equal(piketShutdown.statusCode, 403);
+
+    const piketChime = await app.inject({
+      method: 'POST',
+      url: '/api/remote/play-chime',
+      headers: { authorization: `Bearer ${piketToken}` }
+    });
+    assert.equal(piketChime.statusCode, 403);
+
+    wakaSocket.disconnect();
     deviceSocket.disconnect();
   } finally {
     await app.close();

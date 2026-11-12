@@ -86,6 +86,42 @@ fun AnnounceScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        val canAnnounce = state.user?.role == "admin" || state.user?.role == "waka"
+        if (!canAnnounce) {
+            SectionCard(
+                title = "Siaran Pengumuman Terbatas",
+                subtitle = "Keamanan Sekolah"
+            ) {
+                Text(
+                    text = "Fitur siaran pengumuman langsung (Ting-Tong, Voice Note, dan Live Mic) hanya dapat digunakan oleh akun Admin atau Waka Kurikulum.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = SlateMuted
+                )
+            }
+            return@Column
+        }
+
+        if (state.user?.mustChangePassword == true) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = AmberContainer),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Warning, contentDescription = null, tint = AmberWarn)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "Demi keamanan, ganti password bawaan di menu Setelan terlebih dahulu sebelum menyiarkan pengumuman.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SlateText
+                    )
+                }
+            }
+        }
+
         // Top Card: Status PC Bel + Standalone Ting-Tong Button
         SectionCard(
             title = "Pengumuman Langsung",

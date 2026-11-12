@@ -68,7 +68,7 @@ export function registerAudioRoutes(
 
   app.post(
     '/api/audio/upload',
-    { preHandler: requireAuth(db, ['admin', 'waka', 'piket']) },
+    { preHandler: requireAuth(db, ['admin', 'waka', 'piket'], { requireChangedPassword: true }) },
     async (request, reply) => {
       let filePart;
       try {

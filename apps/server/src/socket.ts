@@ -10,10 +10,17 @@ import {
 import { z } from 'zod';
 import { verifyUserToken } from './auth.js';
 import type { AppDatabase } from './db.js';
+import { safeTokenEquals } from './security.js';
 
 export class RealtimeHub {
   public readonly io: SocketIOServer;
   private readonly deviceSockets = new Set<string>();
+  private activeLiveBroadcast: {
+    sessionId: string;
+    userId: string;
+    displayName: string;
+    socketId: string;
+  } | null = null;
 
   constructor(
     httpServer: HttpServer,
@@ -31,7 +38,10 @@ export class RealtimeHub {
       try {
         const auth = socket.handshake.auth as Record<string, unknown>;
         if (auth?.kind === 'device') {
-          if (auth.deviceToken !== this.db.getDeviceToken()) {
+          if (
+            typeof auth.deviceToken !== 'string' ||
+            !safeTokenEquals(auth.deviceToken, this.db.getDeviceToken())
+          ) {
             return next(new Error('Invalid device token'));
           }
           socket.data.kind = 'device';
@@ -159,15 +169,54 @@ export class RealtimeHub {
 
     if (socket.data.kind === 'user') {
       socket.join('admins');
-      let activeLiveSessionId: string | null = null;
+      let chunkWindowStart = Date.now();
+      let chunkWindowCount = 0;
 
       socket.on('announce:live_start', (raw: unknown, ack) => {
+        const replyAck = (payload: Record<string, unknown>) => {
+          if (typeof ack === 'function') ack(payload);
+        };
+
         if (!this.isDeviceConnected()) {
-          if (typeof ack === 'function') {
-            ack({ ok: false, error: 'PC Bel sedang offline / tidak terhubung ke server' });
-          }
+          replyAck({ ok: false, error: 'PC Bel sedang offline / tidak terhubung ke server' });
           return;
         }
+
+        const authUser = socket.data.user as { id?: string } | undefined;
+        const freshRow = authUser?.id ? this.db.findUserById(authUser.id) : null;
+        if (!freshRow || !freshRow.active) {
+          replyAck({ ok: false, error: 'Akun tidak aktif atau sesi tidak valid' });
+          return;
+        }
+        const freshUser = this.db.toPublicUser(freshRow);
+        if (freshUser.role !== 'admin' && freshUser.role !== 'waka') {
+          replyAck({ ok: false, error: 'Hanya Admin atau Waka Kurikulum yang dapat menggunakan Live Mic' });
+          return;
+        }
+        if (freshUser.mustChangePassword) {
+          replyAck({
+            ok: false,
+            error: 'Demi keamanan, ganti password bawaan di menu Pengaturan sebelum memakai Live Mic'
+          });
+          return;
+        }
+
+        if (this.activeLiveBroadcast && this.activeLiveBroadcast.socketId !== socket.id) {
+          if (freshUser.role !== 'admin') {
+            replyAck({
+              ok: false,
+              error: `Live Mic sedang dipakai oleh ${this.activeLiveBroadcast.displayName}`
+            });
+            return;
+          }
+          // Admin taking over cleanly stops previous session
+          this.io.to('device').emit('device:live_mic_stop', {
+            sessionId: this.activeLiveBroadcast.sessionId,
+            requestedBy: this.activeLiveBroadcast.displayName
+          });
+          this.activeLiveBroadcast = null;
+        }
+
         const body = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
         const withChime = body.withChime !== false;
         const sampleRate =
@@ -175,58 +224,74 @@ export class RealtimeHub {
             ? Math.round(body.sampleRate)
             : 16000;
         const sessionId = crypto.randomUUID();
-        activeLiveSessionId = sessionId;
-        const requestedBy = String(socket.data.user?.displayName || 'Admin');
+        this.activeLiveBroadcast = {
+          sessionId,
+          userId: freshUser.id,
+          displayName: freshUser.displayName,
+          socketId: socket.id
+        };
 
         this.io.to('device').emit('device:live_mic_start', {
           sessionId,
-          requestedBy,
+          requestedBy: freshUser.displayName,
           withChime,
           sampleRate
         });
 
-        if (typeof ack === 'function') {
-          ack({ ok: true, sessionId });
-        }
+        replyAck({ ok: true, sessionId });
       });
 
       socket.on('announce:live_chunk', (raw: unknown) => {
-        if (!activeLiveSessionId || !this.isDeviceConnected()) return;
-        const body = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
-        if (body.sessionId !== activeLiveSessionId) return;
-        if (typeof body.pcmBase64 !== 'string' || body.pcmBase64.length === 0 || body.pcmBase64.length > 262144) {
+        if (
+          !this.activeLiveBroadcast ||
+          this.activeLiveBroadcast.socketId !== socket.id ||
+          !this.isDeviceConnected()
+        ) {
           return;
         }
+        const body = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
+        if (body.sessionId !== this.activeLiveBroadcast.sessionId) return;
+        if (typeof body.pcmBase64 !== 'string' || body.pcmBase64.length === 0 || body.pcmBase64.length > 65536) {
+          return;
+        }
+        const now = Date.now();
+        if (now - chunkWindowStart >= 1000) {
+          chunkWindowStart = now;
+          chunkWindowCount = 0;
+        }
+        chunkWindowCount += 1;
+        if (chunkWindowCount > 40) return;
+
         const sampleRate =
           typeof body.sampleRate === 'number' && body.sampleRate >= 8000 && body.sampleRate <= 48000
             ? Math.round(body.sampleRate)
             : 16000;
         this.io.to('device').emit('device:live_mic_chunk', {
-          sessionId: activeLiveSessionId,
+          sessionId: this.activeLiveBroadcast.sessionId,
           pcmBase64: body.pcmBase64,
           sampleRate
         });
       });
 
       socket.on('announce:live_stop', (raw: unknown) => {
-        if (!activeLiveSessionId) return;
+        if (!this.activeLiveBroadcast || this.activeLiveBroadcast.socketId !== socket.id) return;
         const body = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
-        if (body.sessionId && body.sessionId !== activeLiveSessionId) return;
-        const finishedId = activeLiveSessionId;
-        activeLiveSessionId = null;
+        if (body.sessionId && body.sessionId !== this.activeLiveBroadcast.sessionId) return;
+        const finished = this.activeLiveBroadcast;
+        this.activeLiveBroadcast = null;
         this.io.to('device').emit('device:live_mic_stop', {
-          sessionId: finishedId,
-          requestedBy: String(socket.data.user?.displayName || 'Admin')
+          sessionId: finished.sessionId,
+          requestedBy: finished.displayName
         });
       });
 
       socket.on('disconnect', () => {
-        if (activeLiveSessionId) {
-          const finishedId = activeLiveSessionId;
-          activeLiveSessionId = null;
+        if (this.activeLiveBroadcast && this.activeLiveBroadcast.socketId === socket.id) {
+          const finished = this.activeLiveBroadcast;
+          this.activeLiveBroadcast = null;
           this.io.to('device').emit('device:live_mic_stop', {
-            sessionId: finishedId,
-            requestedBy: String(socket.data.user?.displayName || 'Admin')
+            sessionId: finished.sessionId,
+            requestedBy: finished.displayName
           });
         }
       });
